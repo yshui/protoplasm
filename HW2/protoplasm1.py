@@ -257,7 +257,7 @@ def parse(filename):
         #when reduce, the classes' reduce method is called
         if toknum == tokenize.ENCODING:
             continue
-        if toknum == tokenize.NEWLINE:
+        if toknum == tokenize.NEWLINE or toknum == tokenize.NL:
             continue
         if toknum == tokenize.ENDMARKER:
             if state != 0 :
@@ -320,6 +320,7 @@ def main():
         __tmp = parse(sys.argv[1])
     except Exception as _e:
         print("Parse error: {0}".format(_e))
+        raise
         sys.exit(1)
     outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
     print("AST:\n{0}".format(__tmp))
