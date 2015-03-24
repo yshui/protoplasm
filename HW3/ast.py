@@ -232,8 +232,8 @@ class Prnt:
         self.linenum = linenum
         self.expr = expr
     def emit(self, varv, ir):
-        bb = ir.last_bb
         res = self.expr.get_result(varv, ir)
+        bb = ir.last_bb
         bb += [IPrnt(res)]
     def get_defined(self):
         return set()
@@ -355,7 +355,7 @@ class While:
         #replace the names in phi nodes
         body = ir.last_bb
         res2 = self.cond.get_result(varv, ir)
-        body += [Br(1, res2, bname)]
+        body += [Br(2, res2, bname)]
         for phi in phis:
             v = phi.srcs[bname].val
             phi.del_source(bname)

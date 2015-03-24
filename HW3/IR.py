@@ -1,5 +1,9 @@
 import copy
-from instruction import usable_reg
+
+usable_reg = []
+for __i in range(0, 10):
+    usable_reg += ["t{0}".format(__i)]
+
 class Cell:
     def __init__(self, val):
         self.val = val
@@ -462,8 +466,8 @@ class BB:
     def allocatable(self):
         assert(self.avail_done)
         assert(self.inout_done)
-        return not self.required
-    def gencode(self, bbmap):
+        return not self.required and not self.allocated
+    def gencode(self, bbmap, succ):
         out = ""
         #First, generate code for phi nodes
         for pred in self.predecessors:
@@ -497,6 +501,8 @@ class BB:
                     tmpreg = str(i.dst)
                     has_reg[i.srcs[pred]] = True
             if nphi == 0:
+                print ("No phi to process")
+                out += "\tb %s\n" % self.name
                 continue
             if not tmpreg:
                 #then we must borrow a reg from someone
@@ -519,7 +525,7 @@ class BB:
                     src = srcb.out_reg[i.val]
                 else :
                     src = i
-                load_or_move(src, tmpreg)
+                out += load_or_move(src, tmpreg)
                 while dsts[i]:
                     ii = dsts[i].pop()
                     out += "\tsw "+tmpreg+ii.dst.get_offset()+"($sp)\n"
@@ -529,19 +535,20 @@ class BB:
             for i in has_reg:
                 if not has_reg[i]:
                     continue
+                print("Loading %s" % i)
                 for ii in dsts[i]:
                     if ii.dst.is_reg:
                         break
                 if i.is_var:
-                    load_or_move(srcb.out_reg[i.val], ii.dst)
+                    out += load_or_move(srcb.out_reg[i.val], ii.dst)
                 else :
-                    load_or_move(i, ii.dst)
+                    out += load_or_move(i, ii.dst)
                 tmpreg = ii.dst
                 while dsts[i]:
                     ii = dsts[i].pop()
                     if ii.dst == tmpreg:
                         continue
-                    move_or_store(tmpreg, ii.dst)
+                    out += move_or_store(tmpreg, ii.dst)
             out += '\tb '+self.name+"\n"
         out += self.name+":\n"
         endn = 0
@@ -568,6 +575,9 @@ class BB:
             out += self.end.gencode(self.name)
             for pi in self.post[endn]:
                 out += pi.gencode()
+        #fall through path
+        if succ and self.fall_through:
+            out += "\tb %s\n" % (succ+"_"+self.name)
         return out
 
     def allocate(self, in_reg, mem):
@@ -594,6 +604,7 @@ class BB:
                     last_use[k] = n
                     term_ins[n] |= {k}
         for n, i in enumerate(self.ins):
+            print (i)
             d = i.get_dfn()
             assert len(d) <= 1, "More than one defined variable???"
             if d:
@@ -688,7 +699,7 @@ class BB:
         self.availbb_next = set()
         self.fall_through = True
         self.out = set()
-        self.In = set()
+        self.In = None
         self.pre = {}
         self.post = {}
         self.out_reg = {}
@@ -726,10 +737,7 @@ class BB:
         return self.in_used
 
     def inout_next(self, bbmap, queue):
-        in_next = (self.out|self.internal_used)-self.internal_dfn
-        if in_next == self.In:
-            return
-        self.In = in_next
+        self.In = (self.out|self.internal_used)-self.internal_dfn
         visited = set()
         for i in self.ins:
             if not i.is_phi:
@@ -758,6 +766,7 @@ class BB:
 
     def __iadd__(self, _ins):
         if self.end :
+            print(self)
             raise Exception("Appending instruction after end of BB")
         if self.availbb :
             raise Exception("Appending instruction after calc availbb")
@@ -822,7 +831,6 @@ class IR:
         mem = Memory()
         while queue:
             h = queue.pop()
-            print(h.required)
             in_reg = {}
             for availbb in h.availbb:
                 abb = self.bbmap[availbb]
@@ -895,6 +903,7 @@ class IR:
             bb.out = set()
             queue |= {bb.name}
         while queue:
+            print(queue)
             h = queue.pop()
             self.bbmap[h].inout_next(self.bbmap, queue)
         for bb in self.bb:
@@ -904,8 +913,13 @@ class IR:
         f = open(fname, 'w')
         f.write(".data\nnl: .asciiz \"\\n\"\n")
         f.write(".text\nmain:\n")
-        for bb in self.bb:
-            f.write(bb.gencode(self.bbmap))
+        for n, bb in enumerate(self.bb):
+            if n+1 < len(self.bb):
+                succ = self.bb[n+1].name
+            else :
+                succ = None
+            f.write(bb.gencode(self.bbmap, succ))
+        f.write("\tli $v0, 10\n\tsyscall\n")
         f.close()
 
     @property
