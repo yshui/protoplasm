@@ -10,14 +10,15 @@ class Cell:
         self.is_reg = False
         self.is_imm = False
     def __eq__(self, other):
-        assert isinstance(other, Cell)
+        if not isinstance(other, Cell):
+            return False
         return self.val == other.val
     def validate(self, dfn):
         return True
     def get_dfn(self):
         assert False
     def __str__(self):
-        return "("+self.val+")"
+        return "("+str(self.val)+")"
     def get_used(self):
         return set()
     def get_offset(self):
@@ -91,8 +92,10 @@ class Var:
             return set()
         return {self.val}
     def allocate(self, regmap):
-        assert self.val in regmap
-        return regmap[self.val]
+        #assert self.val in regmap
+        if self.val in regmap:
+            return regmap[self.val]
+        return self
     def mark_as_used(self):
         assert self.dst
         self.used = True
@@ -127,7 +130,12 @@ def get_operand(val, dst=0):
         return Var(val[1:], dst)
     return Register(val)
 
-class NIns:
+class BaseIns:
+    last_use = set() #Which variable is used the last time in this instructions
+    def get_used(self):
+        assert False
+
+class NIns(BaseIns):
     'Normal instructions, not end of basic block or phi'
     is_br = False
     is_phi = False
@@ -193,7 +201,7 @@ class IInpt(NIns):
       out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
     def __str__(self):
-        return "INPUT "+str(self.dst)
+        return "input "+str(self.dst)
 
 class IPrnt(NIns):
     def __init__(self, var):
@@ -205,7 +213,7 @@ class IPrnt(NIns):
     def get_dfn(self):
         return set()
     def __str__(self):
-        return "PRINT "+str(self.var)
+        return "print "+str(self.var)
     def get_used(self):
         return self.var.get_used()
     def gencode(self):
@@ -218,24 +226,37 @@ class IPrnt(NIns):
         out += "\tli $v0, 4\n\tla $a0, nl\n\tsyscall\n"
         return out
 
-class Cmp:
+class Cmp(NIns):
     '0 : seq'
     opname = {
-            0 : "SEQ"
+            0 : "seq",
+            1 : "sle",
+            2 : "slt",
+            3 : "sge",
+            4 : "sgt",
+            5 : "sne"
     }
-    opc = {"==" : 0}
+    opc = {'==': 0, '<=': 1, '<' : 2, '>=': 3, '>' : 4, '!=': 5}
+    iopc = {0: 0, 1: 4, 2: 3, 3: 2, 4: 1, 5: 5}
+    def gencode(self):
+        if self.src1.is_imm and self.src2.is_imm:
+            assert False
+        if self.src1.is_imm:
+            return "\t%s %s, %s, %s\n" % (self.opname[self.iopc[self.op]], str(self.dst), str(self.src2), str(self.src1))
+        else :
+            return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.src1), str(self.src2))
     def __init__(self, op, src1, src2, dst):
         assert op in self.opc
         self.op = self.opc[op]
         self.src1 = get_operand(src1)
         self.src2 = get_operand(src2)
         self.dst = get_operand(dst, 1)
+        self.is_phi = False
+        self.is_br = False
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
         self.src1 = self.src1.allocate(regmap)
         self.src2 = self.src2.allocate(regmap)
-    def get_dfn(self):
-        return self.dst.get_dfn()
     def get_used(self):
         return self.src1.get_used()|self.src2.get_used()
     def validate(self, dfn):
@@ -245,7 +266,7 @@ class Cmp:
     def __str__(self):
         return self.opname[self.op]+" "+str(self.dst)+", "+str(self.src1)+", "+str(self.src2)
 
-class Br:
+class Br(BaseIns):
     '0 : j, 1 : beqz, 2 : bnez'
     brname = {
             0 : "j",
@@ -270,7 +291,7 @@ class Br:
             return self.src.get_used()
         return set()
     def gencode(self, curr):
-        real_tgt = self.tgt+"_"+curr
+        real_tgt = self.tgt#+"_"+curr
         if self.op == 0:
             return "\tb "+real_tgt+"\n"
         assert self.src.is_reg
@@ -300,13 +321,16 @@ class Phi:
         return self.dst.get_dfn()
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
+#        for v, bb in self.srcs.items():
+#            self.srcs[bb] = v.allocate(regmap)
+#            assert self.srcs[bb].is_var
     def validate(self, bb, bbmap):
         for src, var in self.srcs.items():
             #does src point to us?
             assert src in bb.predecessors
             print("{0} does point to us".format(src))
             #are we referring to ourselves?
-            assert not var == self.dst
+            #assert not var == self.dst, "Phi %s -> %s" % (var, self.dst)
             #is var defined in src?
             _dfn = bbmap[src].internal_dfn|bbmap[src].avail_dfn
             var.validate(_dfn)
@@ -350,7 +374,7 @@ def load_or_move(src, dst):
     elif src.is_reg:
         return "\tadd %s, %s, 0\n" % (str(dst), str(src))
     else :
-        return "\tlw "+str(dst)+src.get_offset()+"($sp)\n"
+        return "\tlw %s, %s($sp)\n" % (str(dst), src.get_offset())
 
 def move_or_store(src, dst):
     assert src.is_reg
@@ -359,9 +383,9 @@ def move_or_store(src, dst):
     else :
         return "\tsw "+str(src)+dst.get_offset()+"($sp)\n"
 
-class Load:
+class Load(NIns):
     def __init__(self, dst, m):
-        assert isinstance(m, Cell) or isinstance(m, int)
+        assert isinstance(m, Cell) or isinstance(m, int), str(m)
         if isinstance(dst, str):
             dst = get_operand(dst, 1)
         assert isinstance(dst, Register) or isinstance(dst, Var)
@@ -376,8 +400,6 @@ class Load:
         return "load %s, %s" % (str(self.dst), str(self.m))
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
-    def get_dfn(self):
-        return self.dst.get_dfn()
     def get_used(self):
         return set()
     def gencode(self):
@@ -385,7 +407,7 @@ class Load:
     def validate(self, dfn):
         self.dst.validate(dfn)
 
-class Store:
+class Store(NIns):
     def __init__(self, dst, r):
         assert isinstance(r, Register)
         assert isinstance(dst, Cell)
@@ -405,7 +427,7 @@ def promote(regmap, rreg, reg, mem, var, rlock):
         pre = []
         nreg = reg.pop()
         if var in regmap:
-            pre = [Load(regmap[var], nreg)]
+            pre = [Load(nreg, regmap[var])]
         regmap[var] = nreg
         rreg[regmap[var]] = var
         return (pre, [])
@@ -438,7 +460,7 @@ class BB:
         if self.required:
             res += "#Required: "+str(self.required)+"\n"
         for n, i in enumerate(self.ins):
-            if i is self.end:
+            if i is self.br:
                 break
             res += "\t"+str(i)
             if n in self.prune:
@@ -449,8 +471,8 @@ class BB:
             res += "#Epilogue: \n"
         for i in self.epilogue:
             res += "\t"+str(i)+"\n"
-        if self.end:
-            res += "\t"+str(self.end)+"  #end\n"
+        if self.br:
+            res += "\t"+str(self.br)+"  #end\n"
         res += "#Out: "+str(self.out)+"\n"
         if self.out_reg:
             res += "#Out_reg: \n"
@@ -467,217 +489,6 @@ class BB:
         assert(self.avail_done)
         assert(self.inout_done)
         return not self.required and not self.allocated
-    def gencode(self, bbmap, succ):
-        out = ""
-        #First, generate code for phi nodes
-        for pred in self.predecessors:
-            srcb = bbmap[pred]
-            out += self.name+"_"+pred+":\n"
-            print(self.name+"_"+pred+":")
-            has_reg = {}
-            dsts = {}
-            tmpreg = None
-            need_pop = False
-            imm2mem = []
-            nphi = 0
-            for n, i in enumerate(self.ins):
-                if not i.is_phi:
-                    break
-                if n in self.prune:
-                    continue
-                if not i.srcs[pred].is_var:
-                    if i.dst.is_reg:
-                        out += load_or_move(i.srcs[pred], i.dst)
-                    else :
-                        imm2mem.append(i)
-                        nphi += 1
-                    continue
-                nphi += 1
-                if i.srcs[pred] not in has_reg:
-                    dsts[i.srcs[pred]] = []
-                    has_reg[i.srcs[pred]] = False
-                dsts[i.srcs[pred]].append(i)
-                if i.dst.is_reg:
-                    tmpreg = str(i.dst)
-                    has_reg[i.srcs[pred]] = True
-            if nphi == 0:
-                print ("No phi to process")
-                out += "\tb %s\n" % self.name
-                continue
-            if not tmpreg:
-                #then we must borrow a reg from someone
-                #we don't care who we borrow it from
-                #we are going to put it back anyway
-                out += "\tsw $t0, -4($sp)\n"
-                #now we can use t0
-                tmpreg = "$t0"
-                need_pop = True
-            #handle all imm to memory
-            while imm2mem:
-                i = imm2mem.pop()
-                out += "\tli %s, %s\n" % (tmpreg, str(i.srcs[pred]))
-                out += "\tsw "+tmpreg+", "+i.dst.get_offset()+"($sp)\n"
-            #handle all the in memory phi nodes
-            for i in has_reg:
-                if has_reg[i]:
-                    continue
-                if i.is_var:
-                    src = srcb.out_reg[i.val]
-                else :
-                    src = i
-                out += load_or_move(src, tmpreg)
-                while dsts[i]:
-                    ii = dsts[i].pop()
-                    out += "\tsw "+tmpreg+ii.dst.get_offset()+"($sp)\n"
-            #recover tmpreg
-            if need_pop:
-                out += "\tlw $t0, -4($sp)\n"
-            for i in has_reg:
-                if not has_reg[i]:
-                    continue
-                print("Loading %s" % i)
-                for ii in dsts[i]:
-                    if ii.dst.is_reg:
-                        break
-                if i.is_var:
-                    out += load_or_move(srcb.out_reg[i.val], ii.dst)
-                else :
-                    out += load_or_move(i, ii.dst)
-                tmpreg = ii.dst
-                while dsts[i]:
-                    ii = dsts[i].pop()
-                    if ii.dst == tmpreg:
-                        continue
-                    out += move_or_store(tmpreg, ii.dst)
-            out += '\tb '+self.name+"\n"
-        out += self.name+":\n"
-        endn = 0
-        for n, i in enumerate(self.ins):
-            if i is self.end:
-                endn = n
-                break
-            if i.is_phi:
-                continue
-            if n in self.prune:
-                continue
-            for pi in self.pre[n]:
-                out += pi.gencode()
-            out += i.gencode()
-            for pi in self.post[n]:
-                out += pi.gencode()
-
-        if self.epilogue:
-            for i in self.epilogue:
-                out += i.gencode()
-        if self.end:
-            for pi in self.pre[endn]:
-                out += pi.gencode()
-            out += self.end.gencode(self.name)
-            for pi in self.post[endn]:
-                out += pi.gencode()
-        #fall through path
-        if succ and self.fall_through:
-            out += "\tb %s\n" % (succ+"_"+self.name)
-        return out
-
-    def allocate(self, in_reg, mem):
-        last_use = {}
-        term_ins = {}
-        avail_reg = set(all_reg)
-        regmap = {}
-        rregmap = {}
-        for v in self.In:
-            assert v in in_reg, "BB(%s): in variable %s not defined in in_reg, pred %s" % (self.name, v, str(self.predecessors))
-            if in_reg[v].is_reg:
-                avail_reg -= {in_reg[v]}
-            regmap[v] = in_reg[v]
-            rregmap[regmap[v]] = v
-        for v in self.out:
-            last_use[v] = -1
-        for n, i in reversed(list(enumerate(self.ins))):
-            if i.is_phi:
-                break
-            uu = i.get_used()
-            term_ins[n] = set()
-            for k in uu:
-                if k not in last_use:
-                    last_use[k] = n
-                    term_ins[n] |= {k}
-        for n, i in enumerate(self.ins):
-            print (i)
-            d = i.get_dfn()
-            assert len(d) <= 1, "More than one defined variable???"
-            if d:
-                d = d.pop()
-            #new variable?
-            if d and d not in last_use:
-                #unused variable
-                self.prune[n] = True
-                continue
-            assert n not in self.pre
-            assert n not in self.post
-            self.pre[n] = []
-            self.post[n] = []
-
-            if i.is_phi:
-                #we will deal with phi nodes later
-                if avail_reg:
-                    r = avail_reg.pop()
-                    regmap[d] = r
-                    rregmap[r] = d
-                else :
-                    regmap[d] = mem.get(d)
-                i.allocate(regmap)
-                continue
-
-            u = i.get_used()
-            #promote arguments into registers
-            for v in u:
-                pre, post = promote(regmap, rregmap, avail_reg, mem, v, u)
-                self.pre[n] += pre
-                self.post[n] += post
-            #add regs that are used the last time back to avail_reg
-            for v in term_ins[n]:
-                if regmap[v].is_reg:
-                    avail_reg |= {regmap[v]}
-                    del rregmap[regmap[v]]
-                else :
-                    mem.drop(v)
-            if d:
-                pre, post = promote(regmap, rregmap, avail_reg, mem, d, u)
-                self.pre[n] += pre
-                self.post[n] += post
-            i.allocate(regmap)
-            for v in term_ins[n]:
-                del regmap[v]
-        for v in self.out:
-            if v in self.In:
-                if regmap[v] != in_reg[v]:
-                    if in_reg[v].is_reg:
-                        #since the register changed, its value must still be in memory
-                        #so move whoever is using in_reg[v] into regmap[v]
-                        #and then load the memory into in_reg[v]
-                        if in_reg[v] in rregmap:
-                            inmem, mc = mem.get(v)
-                            inv = rregmap[in_reg[v]]
-                            assert inmem
-                            self.epilogue.append(Arithm('+', regmap[v], in_reg[v], 0))
-                            self.epilogue.append(Load(in_reg[v], mc))
-                            regmap[inv] = regmap[v]
-                            rregmap[regmap[inv]] = inv
-                            regmap[v] = in_reg[v]
-                            rregmap[regmap[v]] = v
-                        else :
-                            #in_reg[v] is not used, simply move
-                            self.epilogue.append(Arithm('+', in_reg[v], regmap[v], 0))
-                            del rregmap[regmap[v]]
-                            regmap[v] = in_reg[v]
-                            rregmap[regmap[v]] = v
-                    else :
-                        assert mem.get(v) == in_reg[v]
-                        regmap[v] = in_reg[v]
-            self.out_reg[v] = regmap[v]
-        self.allocated = True
 
     def __init__(self, name, ins=[]):
         #dfn is variable defined in all paths lead to this bb
@@ -686,9 +497,11 @@ class BB:
         self.allocated = False #is register allocation done
         self.avail_done = False
         self.inout_done = False
-        self.end = None
+        self.end = False
+        self.br = None
         self.nxt = None
-        self.phi = True
+        self.phi = []
+        self._phi = True
         self.in_dfn = set() #in_dfn = definitions in this bb
         self.a_dfn = set() #available definitions
         self.in_used = set()
@@ -766,25 +579,34 @@ class BB:
 
     def __iadd__(self, _ins):
         if self.end :
-            print(self)
+            #print(self)
             raise Exception("Appending instruction after end of BB")
         if self.availbb :
             raise Exception("Appending instruction after calc availbb")
         ins = copy.copy(_ins)
         while ins:
             i = ins.pop(0)
-            if i.is_phi and not self.phi:
+            if i.is_phi and not self._phi:
                 raise Exception("Phi instructions in the middle of a BB")
-            if not i.is_phi:
-                self.phi = False
+            if not i.is_phi and self._phi:
+                self._phi = False
+                self.phi = self.ins[0:]
             if i.is_br:
                 if ins:
                     raise Exception("Branch not at end of BB.")
-                self.end = i
+                self.end = True
+                self.br = i
                 self.nxt = i.tgt
                 self.fall_through = i.is_cond
             self.ins.append(i)
         return self
+    @property
+    def nonbr_ins(self):
+        if not self.ins:
+            return []
+        if self.ins[-1].is_br:
+            return self.ins[0:-1]
+        return self.ins
     @property
     def avail_dfn(self):
         if not self.avail_done:
@@ -797,6 +619,10 @@ class BB:
         for i in self.ins:
             self.in_dfn |= i.get_dfn()
         return self.in_dfn
+    def finish(self):
+        if self._phi:
+            self.phi = self.ins[0:]
+        self.end = True
     def validate(self, bbmap):
         #with the help of available dfn
         #we can make sure all of the variables used in this bb
@@ -819,6 +645,18 @@ class BB:
         for i in self.ins:
             if i.is_phi:
                 i.validate(self, bbmap)
+    def liveness(self):
+        alive = self.out
+        for i in reversed(self.ins):
+            if i.is_phi:
+                break
+            u = i.get_used()
+            for v in u:
+                if v not in alive:
+                    i.last_use |= {v}
+                    alive |= {v}
+            d, = i.get_dfn()
+            alive -= {d}
 
 class IR:
     def __str__(self):
@@ -853,11 +691,11 @@ class IR:
         self.bbcnt = 0
 
     def __iadd__(self, o):
-        self.bb += o
         for i in o:
             if i.name in self.bbmap:
                 raise Exception("Basic blocks with duplicated name")
             self.bbmap[i.name] = i
+            self.bb.append(i)
         self.bbcnt += len(o)
         return self
 
@@ -889,9 +727,7 @@ class IR:
             bb.availbb = init
         queue = {self.bb[0].name}
         while queue :
-            print(queue)
             h = queue.pop()
-            print(self)
             self.bbmap[h].avail_next(self.bbmap, queue)
         for bb in self.bb:
             bb.avail_finish(self.bbmap)
@@ -903,7 +739,6 @@ class IR:
             bb.out = set()
             queue |= {bb.name}
         while queue:
-            print(queue)
             h = queue.pop()
             self.bbmap[h].inout_next(self.bbmap, queue)
         for bb in self.bb:
@@ -921,6 +756,16 @@ class IR:
             f.write(bb.gencode(self.bbmap, succ))
         f.write("\tli $v0, 10\n\tsyscall\n")
         f.close()
+    def finish(self):
+        print(self)
+        for bb in self.bb:
+            bb.finish()
+        self.calc_connections()
+        self.calc_avail()
+        self.validate()
+        self.calc_inout()
+        for bb in self.bb:
+            bb.liveness()
 
     @property
     def last_bb(self):

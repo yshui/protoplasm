@@ -1,6 +1,7 @@
 from parser import parser
 from IR import IR
 from ast import VarVer
+import transform
 import sys
 import logging
 import re
@@ -15,13 +16,12 @@ if __name__ == "__main__":
     ir.append_bb(None)
     varv = VarVer()
     res.emit(varv, ir)
+    ir.finish()
     print(ir)
-    ir.calc_connections()
-    ir.calc_avail()
-    ir.validate()
-    ir.calc_inout()
-    print(ir)
-    ir.allocate()
-    print(ir)
-    outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
-    ir.gencode(outf)
+    #ir = transform.empty_block_removal(ir)
+    ir = transform.block_coalesce(ir)
+    ir = transform.chain_breaker(ir)
+#    ir.allocate()
+#    print(ir)
+#    outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
+#    ir.gencode(outf)

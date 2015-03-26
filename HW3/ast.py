@@ -97,11 +97,15 @@ class BinOP(Expr):
             self.const_emit(varv, ir, dst)
             return
         bb = ir.last_bb
+        arithm = {'+', '-', '*', '//', '%', '&', '|'}
         if self.op not in {'&&', '||'}:
             lres = self.lopr.get_result(varv, ir)
             rres = self.ropr.get_result(varv, ir)
             dst = varv.next_ver(dst)
-            bb += [Arithm(self.op, dst, lres, rres)]
+            if self.op in arithm:
+                bb += [Arithm(self.op, dst, lres, rres)]
+            else :
+                bb += [Cmp(self.op, lres, rres, dst)]
         elif self.op == '&&':
             lres = self.lopr.get_result(varv, ir)
             ir.append_bb(None)
@@ -131,7 +135,7 @@ class BinOP(Expr):
             ll = self.lopr.get_result(ir, varv, ir)
             rr = self.ropr.get_result(ir, varv, ir)
             if self.op not in {'&&', '||'} :
-                return eval("%d %s %d" % (ll, self.op, rr))
+                return int(eval("%d %s %d" % (ll, self.op, rr)))
             elif self.op == '&&' :
                 if not ll:
                     return 0
