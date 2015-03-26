@@ -99,6 +99,9 @@ class Var:
     def mark_as_used(self):
         assert self.dst
         self.used = True
+    def mark_as_unused(self):
+        assert self.dst
+        self.used = False
 
 class Nil:
     def __init__(self, var=0, dst=0):
@@ -111,7 +114,7 @@ class Nil:
     def val(self):
         assert False
     def __str__(self):
-        return ""
+        return "Nil()"
     def get_used(self):
         return set()
     def allocate(self, _):
@@ -131,9 +134,17 @@ def get_operand(val, dst=0):
     return Register(val)
 
 class BaseIns:
-    last_use = set() #Which variable is used the last time in this instructions
+    _last_use = None #Which variable is used the last time in this instructions
     def get_used(self):
         assert False
+    @property
+    def last_use(self):
+        if self._last_use is None:
+            self._last_use = set()
+        return self._last_use
+    @last_use.setter
+    def last_use(self, n):
+        self._last_use = n
 
 class NIns(BaseIns):
     'Normal instructions, not end of basic block or phi'
@@ -143,6 +154,8 @@ class NIns(BaseIns):
         self.dst = None
     def mark_as_used(self):
         self.dst.mark_as_used()
+    def mark_as_unused(self):
+        self.dst.mark_as_unused()
     @property
     def used(self):
         return self.dst.used
@@ -189,7 +202,10 @@ class Arithm(NIns):
 
 class IInpt(NIns):
     def __init__(self, dst):
-        self.dst = get_operand(dst, 1)
+        if dst is None:
+            self.dst = Nil()
+        else :
+            self.dst = get_operand(dst, 1)
     def validate(self, dfn):
         self.dst.validate(dfn)
     def allocate(self, regmap):
@@ -200,6 +216,17 @@ class IInpt(NIns):
       out = "\tli $v0, 5\n\tsyscall\n"
       out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
+    def mark_as_used(self):
+        if not isinstance(self.dst, Nil):
+            self.dst.mark_as_used()
+    def mark_as_unused(self):
+        if not isinstance(self.dst, Nil):
+            self.dst.mark_as_unused()
+    @property
+    def used(self):
+        if not isinstance(self.dst, Nil):
+            return self.dst.used
+        return True
     def __str__(self):
         return "input "+str(self.dst)
 
@@ -216,6 +243,11 @@ class IPrnt(NIns):
         return "print "+str(self.var)
     def get_used(self):
         return self.var.get_used()
+    def mark_as_used(self):
+        pass
+    @property
+    def used(self):
+        return True
     def gencode(self):
         out = ""
         if self.var.is_reg:
@@ -280,6 +312,7 @@ class Br(BaseIns):
         self.is_br = True
         self.is_phi = False
         self.is_cond = (op != 0)
+        self.used = True
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
@@ -313,6 +346,13 @@ class Phi:
         self.is_phi = True
         self.is_br = False
         self.dst = get_operand(dst, 1)
+    def mark_as_used(self):
+        self.dst.mark_as_used()
+    def mark_as_unused(self):
+        self.dst.mark_as_unused()
+    @property
+    def used(self):
+        return self.dst.used
     def set_source(self, bb, src):
         self.srcs[bb] = get_operand(src)
     def del_source(self, bb):
@@ -321,9 +361,6 @@ class Phi:
         return self.dst.get_dfn()
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
-#        for v, bb in self.srcs.items():
-#            self.srcs[bb] = v.allocate(regmap)
-#            assert self.srcs[bb].is_var
     def validate(self, bb, bbmap):
         for src, var in self.srcs.items():
             #does src point to us?
@@ -343,29 +380,6 @@ class Phi:
             res += x+" : "+str(y)+", "
         res += "]"
         return res
-
-class Memory:
-    def __init__(self):
-        self.avail = set()
-        self.top = 0
-        self.mmap = {}
-    def get(self, var):
-        if var in self.mmap:
-            return (True, self.mmap[var])
-        if self.avail:
-            self.mmap[var] = Cell(self.avail.pop())
-        else :
-            self.mmap[var] = Cell(self.top)
-            self.top += 1
-        return (False, self.mmap[var])
-    def drop(self, var):
-        assert var in self.mmap
-        m = self.mmap[var]
-        del self.mmap[var]
-        if m.val == self.top:
-            self.top -= 1
-        else :
-            self.avail |= {m.val}
 
 def load_or_move(src, dst):
     assert dst.is_reg
@@ -416,36 +430,6 @@ class Store(NIns):
     def gencode(self):
         return move_or_store(self.r, self.dst)
 
-def promote(regmap, rreg, reg, mem, var, rlock):
-    """
-    promote var to register, don't spill variables in
-    rlock
-    """
-    if var in regmap and regmap[var].is_reg:
-        return ([], [])
-    if reg:
-        pre = []
-        nreg = reg.pop()
-        if var in regmap:
-            pre = [Load(nreg, regmap[var])]
-        regmap[var] = nreg
-        rreg[regmap[var]] = var
-        return (pre, [])
-
-    for v in regmap:
-        if v not in rlock and regmap[v].is_reg:
-            break
-
-    inmem, mc = mem.get(v)
-    if not inmem:
-        pre = [Store(regmap[v], mc)]
-    if var in regmap:
-        pre.append(Load(regmap[var], regmap[v]))
-    regmap[var] = regmap[v]
-    rreg[regmap[v]] = var
-    regmap[v] = mem.get()
-    return (pre, [])
-
 class BB:
     '''
     Last and only the last instruction can be Br
@@ -455,6 +439,7 @@ class BB:
         res = self.name+":\n"
         res += "#availbb: "+str(self.availbb)+"\n"
         res += "#pred: "+str(self.predecessors)+"\n"
+        res += "#succ: "+str(self.successors)+"\n"
         res += "#fall through: "+str(self.fall_through)+"\n"
         res += "#In: "+str(self.In)+"\n"
         if self.required:
@@ -463,14 +448,9 @@ class BB:
             if i is self.br:
                 break
             res += "\t"+str(i)
-            if n in self.prune:
-                res += "  #Pruned\n"
-            else :
-                res += "\n"
-        if self.epilogue:
-            res += "#Epilogue: \n"
-        for i in self.epilogue:
-            res += "\t"+str(i)+"\n"
+            if not i.used:
+                res += "  #unused"
+            res += "\n"
         if self.br:
             res += "\t"+str(self.br)+"  #end\n"
         res += "#Out: "+str(self.out)+"\n"
@@ -484,12 +464,6 @@ class BB:
         return self.name.__hash__()
     def __eq__(self, other):
         return self is other
-    @property
-    def allocatable(self):
-        assert(self.avail_done)
-        assert(self.inout_done)
-        return not self.required and not self.allocated
-
     def __init__(self, name, ins=[]):
         #dfn is variable defined in all paths lead to this bb
         self.ins = copy.copy(ins)
@@ -513,13 +487,9 @@ class BB:
         self.fall_through = True
         self.out = set()
         self.In = None
-        self.pre = {}
-        self.post = {}
         self.out_reg = {}
-        self.epilogue = []
         self.required = set()
         self.dombb = set()
-        self.prune = {}
 
     def avail_next(self, bbmap, queue):
         availbb_next = set()
@@ -646,7 +616,7 @@ class BB:
             if i.is_phi:
                 i.validate(self, bbmap)
     def liveness(self):
-        alive = self.out
+        alive = set(self.out)
         for i in reversed(self.ins):
             if i.is_phi:
                 break
@@ -655,8 +625,23 @@ class BB:
                 if v not in alive:
                     i.last_use |= {v}
                     alive |= {v}
+            ds = i.get_dfn()
+            if ds:
+                d, = ds
+                if d in alive:
+                    i.mark_as_used()
+                    alive -= {d}
+        for i in self.ins:
+            if not i.is_phi:
+                continue
             d, = i.get_dfn()
-            alive -= {d}
+            if d in alive:
+                i.mark_as_used()
+
+    def assign_out_reg(self, vrmap):
+        for v in self.out:
+            assert v in vrmap, "%s not allocated" % v
+            self.out_reg[v] = vrmap[v]
 
 class IR:
     def __str__(self):
@@ -664,26 +649,6 @@ class IR:
         for bb in self.bb:
             res += str(bb)
         return res
-    def allocate(self):
-        queue = set([bb for bb in self.bb if bb.allocatable])
-        mem = Memory()
-        while queue:
-            h = queue.pop()
-            in_reg = {}
-            for availbb in h.availbb:
-                abb = self.bbmap[availbb]
-                for k, v in abb.out_reg.items():
-                    if k not in in_reg:
-                        in_reg[k] = v
-                    else :
-                        assert in_reg[k] == abb.out_reg[k]
-            h.allocate(in_reg, mem)
-            #print(self)
-            for dombb in h.dombb:
-                dbb = self.bbmap[dombb]
-                dbb.required -= {h.name}
-                if dbb.allocatable:
-                    queue |= {dbb}
 
     def __init__(self, bb=[]):
         self.bb = copy.copy(bb)
@@ -741,6 +706,7 @@ class IR:
         while queue:
             h = queue.pop()
             self.bbmap[h].inout_next(self.bbmap, queue)
+            #print("%s: new In %s, new out %s" % (h, self.bbmap[h].In, self.bbmap[h].out))
         for bb in self.bb:
             bb.inout_finish(self.bbmap)
 

@@ -1,15 +1,79 @@
-from IR import IR, BB, Arithm, Phi, Var, Cell, all_reg
+from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, all_reg
 from collections import deque
 import copy
+def _phi_get_used(i):
+    u = set()
+    for bb, v in i.srcs.items():
+        if v.is_var:
+            u |= {v.val}
+    return u
+def _dict_print(d):
+    res = "{"
+    for k, v in d.items():
+        res += ", %s: %s" % (k, v)
+    res += "}"
+    print(res)
+
+def prune_unused(ir):
+    refcount = {}
+    dfn_ins = {}
+    queue = set()
+    for bb in ir.bb:
+        for i in bb.ins:
+            if i.is_phi:
+                u = _phi_get_used(i)
+            else :
+                u = i.get_used()
+            ds = i.get_dfn()
+            if ds:
+                d, = ds
+                dfn_ins[d] = i
+            for v in u:
+                if v not in refcount:
+                    refcount[v] = 0
+                refcount[v] += 1
+            if not i.used:
+                queue |= {i}
+    if not queue:
+        return (False, ir)
+    for i in queue:
+        print("Removing %s" % i)
+    while queue:
+        unused = queue.pop()
+        if unused.is_phi:
+            uu = _phi_get_used(unused)
+        else :
+            uu = unused.get_used()
+        for v in uu:
+            refcount[v] -= 1
+            if refcount[v] <= 0:
+                dfn_ins[v].mark_as_unused()
+                queue |= {dfn_ins[v]}
+
+    nir = IR()
+    for bb in ir.bb:
+        nbb = BB(bb.name)
+        for i in bb.ins:
+            if not i.is_br and not i.used:
+                if isinstance(i, IInpt):
+                    nbb += [IInpt(None)]
+                continue
+            nbb += [i]
+        nir += [nbb]
+    nir.finish()
+    return (True, nir)
+
 def empty_block_removal(ir):
     jmap = {}
     stack = []
     nir = IR()
+    changed = False
     for bb in ir.bb:
         assert not bb.phi, "Can perform block removal when bb has phinodes"
         if not bb.ins:
             #empty block
             stack.append(bb)
+            changed = True
         else :
             while stack:
                 ebb = stack.pop()
@@ -28,11 +92,12 @@ def empty_block_removal(ir):
         nir += [nbb]
     print(nir)
     nir.finish()
-    return nir
+    return (changed, nir)
 
 def block_coalesce(ir):
     removed = set()
     nir = IR()
+    changed = False
     for bb in ir.bb:
         if bb.name in removed:
             continue
@@ -53,12 +118,13 @@ def block_coalesce(ir):
         nbb += succ.ins
         nir += [nbb]
         removed |= {nbb.name}
+        changed = True
     nir.finish()
 
-    return nir
+    return (changed, nir)
 def chain_breaker(ir):
-    print(ir)
     nir = IR()
+    changed = False
     for bb in ir.bb:
         print("======%s======" % bb.name)
         if not bb.In and not bb.phi:
@@ -67,13 +133,13 @@ def chain_breaker(ir):
             continue
         nbb = BB(bb.name)
         #add phi nodes
-        broken = set()
         varmap = {}
         if len(bb.predecessors) > 1:
             #create phi node to grab the replaced
             #variable from different preds
             print("Generate additional phi")
             for v in bb.In:
+                changed = True
                 nphi = Phi("%"+v+"."+bb.name)
                 for p in bb.predecessors:
                     pp = ir.bbmap[p]
@@ -93,6 +159,7 @@ def chain_breaker(ir):
                     sbb = ir.bbmap[srcbb]
                     assert v.is_var
                     if v.val in sbb.In:
+                        changed = True
                         print("%s in %s's In, change name to %s" % (v.val, srcbb, v.val+"."+srcbb))
                         phi.set_source(srcbb, "%"+v.val+"."+srcbb)
                     else :
@@ -111,12 +178,15 @@ def chain_breaker(ir):
             for v in bb.In:
                 if v in pred.In:
                     varmap[v] = Var(v+"."+pred.name)
+        if varmap:
+            changed = True
         for i in bb.nonbr_ins:
             ni = copy.copy(i)
             ni.allocate(varmap)
             nbb += [ni]
         passthrou = bb.In&bb.out
         if len(bb.predecessors) == 1 and passthrou:
+            changed = True
             pred, = bb.predecessors
             pred = ir.bbmap[pred]
             for v in passthrou:
@@ -134,7 +204,7 @@ def chain_breaker(ir):
     for bb in nir.bb:
         assert not bb.In or len(bb.predecessors) == 1
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
-    return nir
+    return (changed, nir)
 
 def any_reg(avail_reg):
     'return any register, but prefer registers that are not being used'
@@ -144,15 +214,19 @@ def any_reg(avail_reg):
 
 def promote(v, avail_reg, vrmap, rvmap, ret, mem):
     reg = any_reg(avail_reg)
-    if not ret[v]:
+    if v not in ret:
         ret[v] = deque([reg])
     else :
         ret[v].append(reg)
     if reg in rvmap:
         mem |= {rvmap[reg]}
         vrmap[rvmap[reg]] = Cell(0)
+    oldreg = "(none)"
+    if v in vrmap:
+        oldreg = str(vrmap[v])
     rvmap[reg] = v
     vrmap[v] = reg
+    print("Promoted %s from %s to %s" % (v, oldreg, reg))
 
 def allocate_bb(bb, bbmap):
     #allocate for phi
@@ -166,6 +240,7 @@ def allocate_bb(bb, bbmap):
         only_pred, = bb.predecessors
         only_pred = bbmap[only_pred]
     for v in bb.In:
+        #we assume chain_breaker has been run
         assert v in only_pred.out_reg
         vreg = only_pred.out_reg[v]
         vrmap[v] = vreg
@@ -206,12 +281,17 @@ def allocate_bb(bb, bbmap):
         rvmap[reg] = phi.dst
         vrmap[phi.dst] = reg
     if bb.phi:
-        mem_phi = list(mem)
-
+        mem_phi = set(mem)
+    else :
+        mem_phi = set()
+    print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
+    _dict_print(vrmap)
+    print(bb.In)
     for i in bb.ins:
         if i.is_phi:
             continue
-        d, = i.get_dfn()
+        print(i)
+        ds = i.get_dfn()
         u = i.get_used()
         for v in u:
             assert(v in vrmap)
@@ -221,19 +301,24 @@ def allocate_bb(bb, bbmap):
         dreg = None
         for v in i.last_use:
             dreg = vrmap[v]
-            avail_reg |= vrmap[v]
+            avail_reg |= {vrmap[v]}
             del rvmap[vrmap[v]]
             del vrmap[v]
+        if not ds:
+            continue
+        d, = ds
         if len(i.last_use) == 1:
             #reuse the operand register
             rvmap[dreg] = d
             vrmap[d] = dreg
             ret[d] = deque([dreg])
             avail_reg -= {dreg}
+            print("Reuse %s for %s" % (dreg, d))
         else :
             #more than one or none, reuse does not make sense
             promote(d, avail_reg, vrmap, rvmap, ret, mem)
-
+    bb.assign_out_reg(vrmap)
+    _dict_print(bb.out_reg)
     return (ret, mem_phi)
 
 def allocate(ir):
@@ -254,21 +339,23 @@ def allocate(ir):
     queue2 -= queue
     while queue:
         h = queue.pop()
-        hbb = ir.bbmap[h]
         #allocate bb
-        allocation[h], in_mem_phi[h] = allocate_bb(hbb, ir)
-        for nbb in hbb.successors:
+        allocation[h], in_mem_phi[h] = allocate_bb(h, ir.bbmap)
+        for nbb in h.successors:
             allocated_pred[nbb] += 1
             if allocated_pred[nbb] == total_pred[nbb]:
-                queue |= {nbb}
-        for dbb in hbb.dombb:
+                queue |= {ir.bbmap[nbb]}
+        for dbb in h.dombb:
             allocated_avail[dbb] += 1
             if allocated_avail[dbb] == total_avail[dbb] and dbb not in queue:
-                queue2 |= {dbb}
+                queue2 |= {ir.bbmap[dbb]}
         if not queue:
             #queue empty, add all bb whose availbb is allocated
             queue = queue2
             queue2 = set()
+    print(allocation)
+    print(in_mem_phi)
+    return (False, ir)
 
     nir = IR()
     for bb in ir.bb:
