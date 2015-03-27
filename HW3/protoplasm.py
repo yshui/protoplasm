@@ -20,14 +20,14 @@ if __name__ == "__main__":
     ir.finish()
     print(ir)
     #ir = transform.empty_block_removal(ir)
-    changed = True
-    while changed:
-        changed, ir = transform.prune_unused(ir)
-    _, ir = transform.block_coalesce(ir)
+    #changed = True
+    #while changed:
+    #    changed, ir = transform.prune_unused(ir)
+    #_, ir = transform.block_coalesce(ir)
     _, ir = transform.chain_breaker(ir)
-    changed = True
-    while changed:
-        changed, ir = transform.prune_unused(ir)
+    #changed = True
+    #while changed:
+    #    changed, ir = transform.prune_unused(ir)
     #pdb.run('transform.allocate(ir)')
     _, ir = transform.allocate(ir)
     #_, ir = transform.block_coalesce(ir)

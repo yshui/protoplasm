@@ -484,7 +484,7 @@ class BB:
         return self is other
     def __init__(self, name, ins=[]):
         #dfn is variable defined in all paths lead to this bb
-        self.ins = copy.copy(ins)
+        self.ins = []
         self.name = name
         self.allocated = False #is register allocation done
         self.avail_done = False
@@ -508,6 +508,8 @@ class BB:
         self.out_reg = {}
         self.required = set()
         self.dombb = set()
+        if ins:
+            self += ins
 
     def avail_next(self, bbmap, queue):
         availbb_next = set()
@@ -743,6 +745,7 @@ class IR:
             bb.finish()
         self.calc_connections()
         self.calc_avail()
+        print(self)
         self.validate()
         self.calc_inout()
         for bb in self.bb:

@@ -76,6 +76,7 @@ def empty_block_removal(ir):
     changed = False
     for bb in ir.bb:
         assert not bb.phi, "Can perform block removal when bb has phinodes"
+        nxbb = BB(bb.name, bb.ins)
         if not bb.ins:
             #empty block
             stack.append(bb)
@@ -88,7 +89,7 @@ def empty_block_removal(ir):
         if not bb.ins:
             continue
         if not bb.br or bb.br.tgt not in jmap:
-            nir += [bb]
+            nir += [nxbb]
             continue
         nbb = BB(bb.name)
         nbb += bb.nonbr_ins
@@ -101,30 +102,59 @@ def empty_block_removal(ir):
     return (changed, nir)
 
 def block_coalesce(ir):
-    removed = set()
+    removed = {}
     nir = IR()
-    changed = False
+    changed = True
+    nextbb = {}
+    nbbmap = {}
+    prev = None
     for bb in ir.bb:
+        if prev:
+            if prev.fall_through:
+                nextbb[prev.name] = bb
+            else :
+                nextbb[prev.name] = None
+        prev = bb
+    nextbb[prev.name] = None
+    for bb in ir.bb:
+        #if a is b's only succ, b is a's only pred
+        #prepend b to a
+        #we need to rebuild the fallthrough chain
+        nxbb = BB(bb.name, bb.ins)
         if bb.name in removed:
             continue
         if len(bb.successors) != 1:
-            nir += [bb]
+            nbbmap[nxbb.name] = nxbb
             continue
         succ, = bb.successors
         succ = ir.bbmap[succ]
         if len(succ.predecessors) > 1:
-            nir += [bb]
+            nbbmap[nxbb.name] = nxbb
             continue
         assert bb.name in succ.predecessors
         if succ.phi:
-            nir += [bb]
+            nbbmap[nxbb.name] = nxbb
             continue
         nbb = BB(bb.name)
         nbb += bb.nonbr_ins
         nbb += succ.ins
-        nir += [nbb]
-        removed |= {nbb.name}
+        nextbb[bb.name] = nextbb[succ.name]
+        del nextbb[succ.name]
+        removed |= {succ.name}
         changed = True
+
+    print (nbbmap)
+    now = ir.bb[0]
+    nbbmap.pop(now.name)
+    while nbbmap:
+        nir += [now]
+        now = nextbb[now.name]
+        if not now:
+            key = next(iter(nbbmap))
+            now = nbbmap.pop(key)
+        else :
+            nbbmap.pop(now.name)
+    nir += [now]
     nir.finish()
 
     return (changed, nir)
@@ -133,9 +163,10 @@ def chain_breaker(ir):
     changed = False
     for bb in ir.bb:
         print("======%s======" % bb.name)
+        nxbb = BB(bb.name, bb.ins)
         if not bb.In and not bb.phi:
             print("No phi, no in, continue")
-            nir += [bb]
+            nir += [nxbb]
             continue
         nbb = BB(bb.name)
         #add phi nodes
