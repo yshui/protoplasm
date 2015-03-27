@@ -317,6 +317,7 @@ def allocate_bb(bb, bbmap):
     M = Memory()
     only_pred = None
     mem_phi = set()
+    prmap = {}
     if len(bb.predecessors)==1:
         assert not bb.phi
         only_pred, = bb.predecessors
@@ -367,6 +368,7 @@ def allocate_bb(bb, bbmap):
             assert reg not in rvmap
             rvmap[reg] = phi.dst
             vrmap[phi.dst] = reg
+            prmap[phi.dst] = reg
         mem_phi = set(mem)
     print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
     _dict_print(vrmap)
@@ -405,7 +407,7 @@ def allocate_bb(bb, bbmap):
             promote(d, avail_reg, vrmap, rvmap, ret, M)
     bb.assign_out_reg(vrmap)
     _dict_print(bb.out_reg)
-    return (ret, mem_phi)
+    return (ret, mem_phi, prmap)
 
 def promote_replay(v, rvmap, vrmap, allocation):
     if v in vrmap and vrmap[v].is_reg:
@@ -443,7 +445,7 @@ def phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, bballoc, name)
     for i in phi:
         dst = i.dst
         src = i.srcs[name]
-        dreg = bballoc[dst][0]
+        dreg = bballoc[dst]
         sregs = src_regs[src]
         if dreg in sregs:
             #case 1 dreg already hold src
@@ -501,6 +503,7 @@ def allocate(ir):
     allocated_avail = {}
     allocation = {}
     in_mem_phi = {}
+    prmaps = {}
     for bb in ir.bb:
         total_pred[bb.name] = len(bb.predecessors)
         total_avail[bb.name] = len(bb.availbb)
@@ -514,7 +517,7 @@ def allocate(ir):
         h = queue.pop()
         queue2 -= {h}
         #allocate bb
-        allocation[h], in_mem_phi[h] = allocate_bb(h, ir.bbmap)
+        allocation[h], in_mem_phi[h], prmaps[h] = allocate_bb(h, ir.bbmap)
         for nbb in h.successors:
             allocated_pred[nbb] += 1
             if allocated_pred[nbb] == total_pred[nbb] and nbb not in allocation:
@@ -603,7 +606,8 @@ def allocate(ir):
             for i in sbb.phi:
                 src = i.srcs[bb.name]
                 dst = i.dst
-                dst_reg = allocation[sbb][dst][0]
+                assert dst in prmaps[sbb], "%s\n%s" % (sbb, dst)
+                dst_reg = prmaps[sbb][dst]
                 if src.is_imm:
                     nbb += [Load(dst_reg, src)]
                     continue
@@ -626,7 +630,7 @@ def allocate(ir):
                 progress = True
                 while progress:
                     #finish anything with no conflict
-                    progress, ins, phi = phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, allocation[sbb], bb.name)
+                    progress, ins, phi = phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, prmaps[sbb], bb.name)
                     nbb += ins
                 if not phi:
                     break
@@ -641,7 +645,7 @@ def allocate(ir):
                         dmt = i.srcs[bb.name]
                         if dmt not in demote:
                             continue
-                        dst_reg = allocation[sbb][i.dst]
+                        dst_reg = prmaps[sbb][i.dst]
                         assert dst_reg.is_reg
                         if dst_reg not in rsrcmap:
                             continue
@@ -666,7 +670,7 @@ def allocate(ir):
                     if not src_mems[dmt]:
                         mcell = M.get(dmt)
                     dst = i.dst
-                    dst_reg = allocation[sbb][dst][0]
+                    dst_reg = prmaps[sbb][dst]
                     assert dst_reg.is_reg
                     nbb += [Load(dst_reg, mcell)]
                 phi = nphi
