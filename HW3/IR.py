@@ -467,7 +467,7 @@ class BB:
             res += "\n"
         return res
     def gencode(self):
-        res = "L"+self.name+":\n"
+        res = self.name+":\n"
         for i in self.ins:
             res += i.gencode()
         return res
