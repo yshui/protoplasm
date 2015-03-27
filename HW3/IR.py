@@ -133,6 +133,10 @@ class Nil:
         return self
 
 def get_operand(val, dst=0):
+    if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell):
+        if dst :
+            assert (isinstance(val, Var) and val.dst) or isinstance(val, Register)
+        return val
     if dst :
         assert isinstance(val, str)
         assert val[0] == '%'
@@ -180,6 +184,10 @@ class Arithm(NIns):
     def gencode(self):
         if self.opr1.is_imm and self.opr2.is_imm:
             assert False
+        if self.opr2.is_imm:
+            if self.opr2.val == 0 and self.opr1 == self.dst:
+                print("%s is NOP" % self)
+                return ""
         return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
 
     def __init__(self, op, dst, opr1, opr2):
@@ -405,15 +413,14 @@ def move_or_store(src, dst):
 
 class Load(NIns):
     def __init__(self, dst, m):
-        assert isinstance(m, Cell) or isinstance(m, int), str(m)
+        if isinstance(m, int):
+            m = Imm(m)
+        assert isinstance(m, Cell) or isinstance(m, Imm), str(m)
         if isinstance(dst, str):
             dst = get_operand(dst, 1)
         assert isinstance(dst, Register) or isinstance(dst, Var)
         self.dst = dst
-        if isinstance(m, int):
-            self.m = Imm(m)
-        else :
-            self.m = m
+        self.m = m
         self.is_phi = False
         self.is_br = False
     def __str__(self):

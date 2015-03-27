@@ -119,7 +119,7 @@ def block_coalesce(ir):
         if succ.phi:
             nir += [bb]
             continue
-        nbb = BB(bb.name+succ.name)
+        nbb = BB(bb.name)
         nbb += bb.nonbr_ins
         nbb += succ.ins
         nir += [nbb]
@@ -519,6 +519,7 @@ def allocate(ir):
         bbmemphi = in_mem_phi[bb]
         if len(bb.predecessors) == 1:
             pred, = bb.predecessors
+            pred = ir.bbmap[pred]
             for v in bb.In:
                 assert v in pred.out_reg
                 vrmap[v] = pred.out_reg[v]
@@ -562,17 +563,21 @@ def allocate(ir):
         for succ in bb.successors:
             sbb = ir.bbmap[succ]
             nbb = BB(bb.name+"_"+succ)
-            phi = bb.phi
+            phi = []
             src_regs = {}
             src_mems = {}
             src_rcv = {}
             rsrcmap = {}
             M = Memory()
-            for i in phi:
+            for i in sbb.phi:
                 src = i.srcs[bb.name]
-                src_reg = bb.out_reg[src]
                 dst = i.dst
                 dst_reg = allocation[sbb][dst][0]
+                if src.is_imm:
+                    nbb += [Load(dst_reg, src)]
+                    continue
+                phi += [i]
+                src_reg = bb.out_reg[src]
                 if dst_reg.is_mem:
                     M.reserve(dst, dst_reg)
                 if src in src_rcv:
@@ -592,13 +597,12 @@ def allocate(ir):
                     #finish anything with no conflict
                     progress, ins, phi = phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, allocation[sbb], bb.name)
                     nbb += ins
+                if not phi:
+                    break
                 #demote any src to memory
                 demote = set()
-                for i in src_rcv:
-                    if src_rcv[i] <= 0:
-                        del src_rcv[i]
-                    else :
-                        demote = {i}
+                src_rcv = set([i for i in src_rcv if src_rcv[i] > 0])
+                demote = set([next(iter(src_rcv))])
                 queue = set(demote)
                 while queue:
                     dmt = queue.pop()
