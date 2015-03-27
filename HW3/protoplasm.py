@@ -5,6 +5,7 @@ import transform
 import sys
 import logging
 import re
+import pdb
 
 if __name__ == "__main__":
     f = open(sys.argv[1], "r")
@@ -27,8 +28,9 @@ if __name__ == "__main__":
     changed = True
     while changed:
         changed, ir = transform.prune_unused(ir)
+    #pdb.run('transform.allocate(ir)')
     _, ir = transform.allocate(ir)
 #    ir.allocate()
 #    print(ir)
-#    outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
-#    ir.gencode(outf)
+    outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
+    ir.gencode(outf)

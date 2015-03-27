@@ -4,11 +4,19 @@ usable_reg = []
 for __i in range(0, 10):
     usable_reg += ["t{0}".format(__i)]
 
+def _str_set(a):
+    res = "set("
+    for b in a:
+        res += str(b)+", "
+    res += ")"
+    return res
+
 class Cell:
     def __init__(self, val):
         self.val = val
         self.is_reg = False
         self.is_imm = False
+        self.is_mem = True
     def __eq__(self, other):
         if not isinstance(other, Cell):
             return False
@@ -35,10 +43,12 @@ class Register:
         self.val = val
         self.is_reg = True
         self.is_imm = False
+        self.is_mem = False
+        self.used = True
     def validate(self, dfn):
         return True
     def get_dfn(self):
-        assert False
+        return set()
     def __str__(self):
         return "$"+self.val
     def get_used(self):
@@ -52,6 +62,7 @@ class Imm:
         self.val = number
         self.is_var = False
         self.is_imm = True
+        self.is_mem = False
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -71,14 +82,15 @@ class Var:
         self.used = False
         self.is_var = True
         self.is_imm = False
+        self.is_mem = False
     def validate(self, dfn):
         if not self.dst:
-            assert self.val in dfn, "%s not defined" % self.val
+            assert self in dfn, "%s not defined" % self
         else :
-            assert self.val not in dfn
+            assert self not in dfn
     def get_dfn(self):
         assert self.dst
-        return {self.val}
+        return {self}
     def __str__(self):
         return "%"+self.val
     def __hash__(self):
@@ -90,11 +102,11 @@ class Var:
     def get_used(self):
         if self.dst:
             return set()
-        return {self.val}
+        return {self}
     def allocate(self, regmap):
         #assert self.val in regmap
-        if self.val in regmap:
-            return regmap[self.val]
+        if self in regmap:
+            return regmap[self]
         return self
     def mark_as_used(self):
         assert self.dst
@@ -134,17 +146,9 @@ def get_operand(val, dst=0):
     return Register(val)
 
 class BaseIns:
-    _last_use = None #Which variable is used the last time in this instructions
+    last_use = None #Which variable is used the last time in this instructions
     def get_used(self):
         assert False
-    @property
-    def last_use(self):
-        if self._last_use is None:
-            self._last_use = set()
-        return self._last_use
-    @last_use.setter
-    def last_use(self, n):
-        self._last_use = n
 
 class NIns(BaseIns):
     'Normal instructions, not end of basic block or phi'
@@ -214,7 +218,8 @@ class IInpt(NIns):
         return set()
     def gencode(self):
       out = "\tli $v0, 5\n\tsyscall\n"
-      out += "\tadd %s, $v0, 0\n" % str(self.dst)
+      if not isinstance(self.dst, Nil):
+          out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
     def mark_as_used(self):
         if not isinstance(self.dst, Nil):
@@ -316,6 +321,7 @@ class Br(BaseIns):
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
+        print(regmap)
         self.src = self.src.allocate(regmap)
     def get_dfn(self):
         return set()
@@ -323,8 +329,8 @@ class Br(BaseIns):
         if self.src:
             return self.src.get_used()
         return set()
-    def gencode(self, curr):
-        real_tgt = self.tgt#+"_"+curr
+    def gencode(self):
+        real_tgt = self.tgt
         if self.op == 0:
             return "\tb "+real_tgt+"\n"
         assert self.src.is_reg
@@ -441,7 +447,7 @@ class BB:
         res += "#pred: "+str(self.predecessors)+"\n"
         res += "#succ: "+str(self.successors)+"\n"
         res += "#fall through: "+str(self.fall_through)+"\n"
-        res += "#In: "+str(self.In)+"\n"
+        res += "#In: "+_str_set(self.In)+"\n"
         if self.required:
             res += "#Required: "+str(self.required)+"\n"
         for n, i in enumerate(self.ins):
@@ -453,12 +459,17 @@ class BB:
             res += "\n"
         if self.br:
             res += "\t"+str(self.br)+"  #end\n"
-        res += "#Out: "+str(self.out)+"\n"
+        res += "#Out: "+_str_set(self.out)+"\n"
         if self.out_reg:
             res += "#Out_reg: \n"
             for k, v in self.out_reg.items():
-                res += k+": "+str(v)+", "
+                res += str(k)+": "+str(v)+", "
             res += "\n"
+        return res
+    def gencode(self):
+        res = ""
+        for i in self.ins:
+            res += i.gencode()
         return res
     def __hash__(self):
         return self.name.__hash__()
@@ -486,7 +497,7 @@ class BB:
         self.availbb_next = set()
         self.fall_through = True
         self.out = set()
-        self.In = None
+        self.In = set()
         self.out_reg = {}
         self.required = set()
         self.dombb = set()
@@ -621,6 +632,7 @@ class BB:
             if i.is_phi:
                 break
             u = i.get_used()
+            i.last_use = set()
             for v in u:
                 if v not in alive:
                     i.last_use |= {v}
@@ -714,12 +726,8 @@ class IR:
         f = open(fname, 'w')
         f.write(".data\nnl: .asciiz \"\\n\"\n")
         f.write(".text\nmain:\n")
-        for n, bb in enumerate(self.bb):
-            if n+1 < len(self.bb):
-                succ = self.bb[n+1].name
-            else :
-                succ = None
-            f.write(bb.gencode(self.bbmap, succ))
+        for bb in self.bb:
+            f.write(bb.gencode())
         f.write("\tli $v0, 10\n\tsyscall\n")
         f.close()
     def finish(self):
