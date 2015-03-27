@@ -467,7 +467,7 @@ def phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, bballoc, name)
             continue
         if dreg not in rsrcmap:
             #case 2
-            assert sregs, "%s don't have register, %s" % (src, name)
+            assert sregs, "%s don't have register, %s, %s" % (src, name, i)
             _sreg = next(iter(sregs))
             print("case 2: %s, %s: %s->%s" % (src, dst, _sreg, dreg))
             ins += [Arithm('+', dreg, _sreg, 0)]
