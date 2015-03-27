@@ -340,6 +340,8 @@ def allocate_bb(bb, bbmap):
                 pbb = bbmap[phibb]
                 if v not in pbb.out_reg:
                     continue
+                if not pbb.out_reg[v].is_reg:
+                    continue
                 phireg |= {pbb.out_reg[v]}
                 avail_reg -= {pbb.out_reg[v]}
         #register preference:
@@ -364,9 +366,10 @@ def allocate_bb(bb, bbmap):
                 else :
                     reg = M.get(phi.dst)
             ret[phi.dst] = deque([reg])
-            avail_reg -= {reg}
-            assert reg not in rvmap
-            rvmap[reg] = phi.dst
+            if reg.is_reg:
+                avail_reg -= {reg}
+                assert reg not in rvmap
+                rvmap[reg] = phi.dst
             vrmap[phi.dst] = reg
             prmap[phi.dst] = reg
         mem_phi = set(mem)
@@ -464,6 +467,7 @@ def phi_do_no_conflict(phi, src_regs, src_mems, src_rcv, rsrcmap, bballoc, name)
             continue
         if dreg not in rsrcmap:
             #case 2
+            assert sregs, "%s don't have register, %s" % (src, name)
             _sreg = next(iter(sregs))
             print("case 2: %s, %s: %s->%s" % (src, dst, _sreg, dreg))
             ins += [Arithm('+', dreg, _sreg, 0)]
@@ -625,7 +629,7 @@ def allocate(ir):
                     src_mems[src] = set()
                 else :
                     src_regs[src] = set()
-                    src_mems[src] = {src_reg}
+                    #src_mems[src] = {src_reg}
             while phi:
                 progress = True
                 while progress:

@@ -1,7 +1,7 @@
 import copy
 
 usable_reg = []
-for __i in range(0, 10):
+for __i in range(0, 1):
     usable_reg += ["t{0}".format(__i)]
 
 def _str_set(a):
