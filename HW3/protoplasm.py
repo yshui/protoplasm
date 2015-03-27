@@ -30,7 +30,7 @@ if __name__ == "__main__":
         changed, ir = transform.prune_unused(ir)
     #pdb.run('transform.allocate(ir)')
     _, ir = transform.allocate(ir)
-    _, ir = transform.block_coalesce(ir)
+    #_, ir = transform.block_coalesce(ir)
 #    ir.allocate()
 #    print(ir)
     outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
