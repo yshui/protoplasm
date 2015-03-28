@@ -1,4 +1,4 @@
-from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load
+from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, parse_bbname, build_bbname
 import copy
 def error(st):
         raise Exception("Unexpected {0}({1}) at {2}, {3}".
@@ -108,20 +108,24 @@ class BinOP(Expr):
                 bb += [Cmp(self.op, lres, rres, dst)]
         elif self.op == '&&':
             lres = self.lopr.get_result(varv, ir)
-            ir.append_bb(None)
-            bb += [Br(1, lres, bb.name+'ep')]
+            pbb = ir.append_bb(None)
+            pbbname = parse_bbname(pbb.name)
+            epname = build_bbname(pbbname, 0, 0, 1)
+            bb += [Br(1, lres, epname)]
             rres = self.ropr.get_result(varv, ir)
             bb2 = ir.last_bb
-            bb3 = ir.append_bb(bb.name+'ep')
+            bb3 = ir.append_bb(epname)
             dst = varv.next_ver(dst)
             bb3 += [Phi(dst, bb.name, 0, bb2.name, rres)]
         elif self.op == '||':
             lres = self.lopr.get_result(varv, ir)
-            ir.append_bb(None)
-            bb += [Br(2, lres, bb.name+'ep')]
+            pbb = ir.append_bb(None)
+            pbbname = parse_bbname(pbb.name)
+            epname = build_bbname(pbbname, 0, 0, 1)
+            bb += [Br(2, lres, epname)]
             rres = self.ropr.get_result(varv, ir)
             bb2 = ir.last_bb
-            bb3 = ir.append_bb(bb.name+'ep')
+            bb3 = ir.append_bb(epname)
             dst = varv.next_ver(dst)
             bb3 += [Phi(dst, bb.name, lres, bb2.name, rres)]
         else :
@@ -266,19 +270,20 @@ class If:
             edfn = self.e.get_defined()
 
         prologue = ir.last_bb
+        pbbname = parse_bbname(prologue.name)
         res = self.cond.get_result(varv, ir)
         if self.e :
-            prologue += [Br(1, res, 'L'+num+'e')]
+            prologue += [Br(1, res, build_bbname(pbbname, 1, 0, 0))]
         else :
-            prologue += [Br(1, res, 'L'+num+'ep')]
+            prologue += [Br(1, res, build_bbname(pbbname, 0, 0, 1))]
         pmap = {}
         for v in (tdfn|edfn)&pdfn:
             pmap[v] = varv.curr_ver(v)
 
-        thenb = ir.append_bb('L'+num+'t')
+        thenb = ir.append_bb(build_bbname(pbbname, 0, 1, 0))
         self.then.emit(varv, ir)
         thenb = ir.last_bb
-        thenb += [Br(0, None, 'L'+num+'ep')]
+        thenb += [Br(0, None, build_bbname(pbbname, 0, 0, 1))]
         #get last version
         thenmap = {}
         for v in tdfn:
@@ -286,13 +291,13 @@ class If:
 
         elsemap = {}
         if self.e :
-            elseb = ir.append_bb('L'+num+'e')
+            elseb = ir.append_bb(build_bbname(pbbname, 1, 0, 0))
             self.e.emit(varv, ir)
             elseb = ir.last_bb
             for v in edfn:
                 elsemap[v] = varv.curr_ver(v)
 
-        ep = ir.append_bb('L'+num+'ep')
+        ep = ir.append_bb(build_bbname(pbbname, 0, 0, 1))
         tgt1b = ""
         tgt2b = ""
         #Add phi nodes here
@@ -343,8 +348,9 @@ class While:
         return 'While('+str(self.cond)+')->'+str(self.do)
     def emit(self, varv, ir):
         prologue = ir.last_bb
+        pbbname = parse_bbname(prologue.name)
         res = self.cond.get_result(varv, ir)
-        prologue += [Br(1, res, prologue.name+'ep')]
+        prologue += [Br(1, res, build_bbname(pbbname, 0, 0, 1))]
         dfn = self.do.get_defined()
         pdfn = varv.get_dfn()
         old_var = {}
@@ -372,7 +378,7 @@ class While:
             phi.del_source(bname)
             phi.set_source(body.name, varv.curr_ver(v))
 
-        epilogue = ir.append_bb(prologue.name+'ep')
+        epilogue = ir.append_bb(build_bbname(pbbname, 0, 0, 1))
         #add phi nodes
         for v in dfn&pdfn:
             lv = varv.curr_ver(v)

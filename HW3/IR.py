@@ -1,22 +1,72 @@
 import copy
+import re
+from utils import _str_set, _dict_print
 
 usable_reg = []
-for __i in range(0, 10):
+for __i in range(0, 2):
     usable_reg += ["t{0}".format(__i)]
 
-def _str_set(a):
-    res = "set("
-    for b in a:
-        res += str(b)+", "
-    res += ")"
-    return res
+def parse_bbname(name):
+    ret = [0, 0, 0, 0]
+    ep = name.find('EP')
+    if ep >= 0:
+        ret[3] = int(name[ep+2:])
+        name = name[:ep]
+    ep = name.find('T')
+    if ep >= 0:
+        ret[2] = int(name[ep+1:])
+        name = name[:ep]
+    ep = name.find('O')
+    if ep >= 0:
+        ret[1] = int(name[ep+1:])
+        name = name[:ep]
+    ret[0] = int(name[1:])
+    return ret
 
-class Cell:
-    def __init__(self, val):
+def build_bbname(no, o, t, ep):
+    name = "L"+str(no[0])
+    if no[1]+o:
+        name += "O"+str(no[1]+o)
+    if no[2]+t:
+        name += "T"+str(no[2]+t)
+    if no[3]+ep:
+        name += "EP"+str(no[3]+ep)
+    return name
+
+def gen_rvmap(*arg):
+    #res = ""
+    #for v in arg:
+        #if not v or v.is_nil:
+            #continue
+        #if not v.is_reg and not v.is_mem:
+            #continue
+        #if v.xvar:
+            #res += "%s->%s, " % (v.xvar, v)
+    #if res:
+        #return "  #"+res
+    return ""
+
+class BassOpr:
+    @property
+    def is_reg(self):
+        return isinstance(self, Register)
+    @property
+    def is_var(self):
+        return isinstance(self, Var)
+    @property
+    def is_imm(self):
+        return isinstance(self, Imm)
+    @property
+    def is_mem(self):
+        return isinstance(self, Cell)
+    @property
+    def is_nil(self):
+        return False
+
+class Cell(BassOpr):
+    def __init__(self, val, var=None):
         self.val = val
-        self.is_reg = False
-        self.is_imm = False
-        self.is_mem = True
+        self.xvar = var
     def __eq__(self, other):
         if not isinstance(other, Cell):
             return False
@@ -24,7 +74,7 @@ class Cell:
     def validate(self, dfn):
         return True
     def get_dfn(self):
-        assert False
+        return set()
     def __str__(self):
         return "("+str(self.val)+")"
     def get_used(self):
@@ -34,17 +84,15 @@ class Cell:
     def allocate(self):
         assert False, "Cannot allocate register for a cell"
 
-class Register:
+class Register(BassOpr):
     def __eq__(self, other):
         return other.val == self.val
     def __hash__(self):
         return str(self).__hash__()
-    def __init__(self, val):
+    def __init__(self, val, var=None):
         self.val = val
-        self.is_reg = True
-        self.is_imm = False
-        self.is_mem = False
         self.used = True
+        self.xvar = var
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -56,13 +104,10 @@ class Register:
     def allocate(self):
         assert False, "Cannot allocate register for a register"
 
-class Imm:
+class Imm(BassOpr):
     def __init__(self, number):
         assert isinstance(number, int)
         self.val = number
-        self.is_var = False
-        self.is_imm = True
-        self.is_mem = False
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -75,14 +120,11 @@ class Imm:
         return self
 
 
-class Var:
+class Var(BassOpr):
     def __init__(self, var, dst=0):
         self.val = var
         self.dst = dst
         self.used = False
-        self.is_var = True
-        self.is_imm = False
-        self.is_mem = False
     def validate(self, dfn):
         if not self.dst:
             assert self in dfn, "%s not defined" % self
@@ -106,6 +148,7 @@ class Var:
     def allocate(self, regmap):
         #assert self.val in regmap
         if self in regmap:
+            regmap[self].xvar = self
             return regmap[self]
         return self
     def mark_as_used(self):
@@ -117,7 +160,7 @@ class Var:
 
 class Nil:
     def __init__(self, var=0, dst=0):
-        pass
+        self.is_nil = True
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -135,7 +178,7 @@ class Nil:
 def get_operand(val, dst=0):
     if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell):
         if dst :
-            assert (isinstance(val, Var) and val.dst) or isinstance(val, Register)
+            assert (val.is_var and val.dst) or val.is_reg
         return val
     if dst :
         assert isinstance(val, str)
@@ -152,7 +195,7 @@ def get_operand(val, dst=0):
 class BaseIns:
     last_use = None #Which variable is used the last time in this instructions
     def get_used(self):
-        assert False
+        assert False, self
 
 class NIns(BaseIns):
     'Normal instructions, not end of basic block or phi'
@@ -166,7 +209,9 @@ class NIns(BaseIns):
         self.dst.mark_as_unused()
     @property
     def used(self):
-        return self.dst.used
+        if self.dst.is_var:
+            return self.dst.used
+        return True
     def get_dfn(self):
         return self.dst.get_dfn()
 
@@ -188,6 +233,8 @@ class Arithm(NIns):
             if self.opr2.val == 0 and self.opr1 == self.dst:
                 print("%s is NOP" % self)
                 return ""
+        assert self.opr1.is_reg
+        assert self.opr2.is_reg or self.opr2.is_imm
         return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
 
     def __init__(self, op, dst, opr1, opr2):
@@ -208,7 +255,9 @@ class Arithm(NIns):
         self.opr2.validate(dfn)
         self.dst.validate(dfn)
     def __str__(self):
-        return "%s %s, %s, %s" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
+        res = "%s %s, %s, %s" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
+        res += gen_rvmap(self.dst, self.opr1, self.opr2)
+        return res
     def get_used(self):
         return self.opr1.get_used()|self.opr2.get_used()
 
@@ -226,22 +275,23 @@ class IInpt(NIns):
         return set()
     def gencode(self):
       out = "\tli $v0, 5\n\tsyscall\n"
-      if not isinstance(self.dst, Nil):
+      if not self.dst.is_nil:
+          assert self.dst.is_reg
           out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
     def mark_as_used(self):
-        if not isinstance(self.dst, Nil):
+        if not self.dst.is_nil:
             self.dst.mark_as_used()
     def mark_as_unused(self):
-        if not isinstance(self.dst, Nil):
+        if not self.dst.is_nil:
             self.dst.mark_as_unused()
     @property
     def used(self):
-        if not isinstance(self.dst, Nil):
+        if not self.dst.is_nil:
             return self.dst.used
         return True
     def __str__(self):
-        return "input "+str(self.dst)
+        return "input "+str(self.dst)+gen_rvmap(self.dst)
 
 class IPrnt(NIns):
     def __init__(self, var):
@@ -253,7 +303,7 @@ class IPrnt(NIns):
     def get_dfn(self):
         return set()
     def __str__(self):
-        return "print "+str(self.var)
+        return "print "+str(self.var)+gen_rvmap(self.var)
     def get_used(self):
         return self.var.get_used()
     def mark_as_used(self):
@@ -266,6 +316,7 @@ class IPrnt(NIns):
         if self.var.is_reg:
             out += "\tadd $a0, %s, 0\n" % str(self.var)
         else :
+            assert self.var.is_imm
             out += "\tli $a0, %s\n" % str(self.var)
         out += "\tli $v0, 1\n\tsyscall\n"
         out += "\tli $v0, 4\n\tla $a0, nl\n\tsyscall\n"
@@ -284,11 +335,15 @@ class Cmp(NIns):
     opc = {'==': 0, '<=': 1, '<' : 2, '>=': 3, '>' : 4, '!=': 5}
     iopc = {0: 0, 1: 4, 2: 3, 3: 2, 4: 1, 5: 5}
     def gencode(self):
+        assert self.dst.is_reg
         if self.src1.is_imm and self.src2.is_imm:
             assert False
         if self.src1.is_imm:
+            assert self.src2.is_reg
             return "\t%s %s, %s, %s\n" % (self.opname[self.iopc[self.op]], str(self.dst), str(self.src2), str(self.src1))
         else :
+            assert self.src1.is_reg, self.src1
+            assert self.src2.is_reg or self.src2.is_imm
             return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.src1), str(self.src2))
     def __init__(self, op, src1, src2, dst):
         assert op in self.opc
@@ -299,6 +354,7 @@ class Cmp(NIns):
         self.is_phi = False
         self.is_br = False
     def allocate(self, regmap):
+        _dict_print(regmap)
         self.dst = self.dst.allocate(regmap)
         self.src1 = self.src1.allocate(regmap)
         self.src2 = self.src2.allocate(regmap)
@@ -309,7 +365,9 @@ class Cmp(NIns):
         self.src2.validate(dfn)
         self.dst.validate(dfn)
     def __str__(self):
-        return self.opname[self.op]+" "+str(self.dst)+", "+str(self.src1)+", "+str(self.src2)
+        res = self.opname[self.op]+" "+str(self.dst)+", "+str(self.src1)+", "+str(self.src2)
+        res += gen_rvmap(self.dst, self.src1, self.src2)
+        return res
 
 class Br(BaseIns):
     '0 : j, 1 : beqz, 2 : bnez'
@@ -344,10 +402,12 @@ class Br(BaseIns):
         assert self.src.is_reg
         return "\t"+self.brname[self.op]+" "+str(self.src)+", "+real_tgt+"\n"
     def __str__(self):
-        if not isinstance(self.src, Nil) :
-            return self.brname[self.op]+" "+str(self.src)+", "+self.tgt
+        if not self.src.is_nil :
+            res = self.brname[self.op]+" "+str(self.src)+", "+self.tgt
         else :
-            return self.brname[self.op]+" "+self.tgt
+            res = self.brname[self.op]+" "+self.tgt
+        res += gen_rvmap(self.src)
+        return res
 
 class Phi:
     def __init__(self, dst, *arg):
@@ -409,7 +469,7 @@ def move_or_store(src, dst):
     if dst.is_reg:
         return "\tadd %s, %s, 0\n" % (str(dst), str(src))
     else :
-        return "\tsw "+str(src)+dst.get_offset()+"($sp)\n"
+        return "\tsw "+str(src)+", "+dst.get_offset()+"($sp)\n"
 
 class Load(NIns):
     def __init__(self, dst, m):
@@ -442,6 +502,12 @@ class Store(NIns):
         self.r = r
     def gencode(self):
         return move_or_store(self.r, self.dst)
+    def validate(self, dfn):
+        self.r.validate(dfn)
+    def get_used(self):
+        return self.r.get_used()
+    def __str__(self):
+        return "store %s, %s" % (str(self.dst), str(self.r))
 
 class BB:
     '''
