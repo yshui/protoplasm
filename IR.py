@@ -496,7 +496,7 @@ class Load(NIns):
 
 class Store(NIns):
     def __init__(self, dst, r):
-        assert isinstance(r, Register)
+        assert isinstance(r, Register), r
         assert isinstance(dst, Cell)
         self.dst = dst
         self.r = r
@@ -508,6 +508,26 @@ class Store(NIns):
         return self.r.get_used()
     def __str__(self):
         return "store %s, %s" % (str(self.dst), str(self.r))
+
+class Ret:
+    def __init__(self):
+        self.used = True
+        self.is_br = True
+        self.is_phi = False
+        self.is_cond = False
+        self.tgt = None
+    def allocate(self, _):
+        return
+    def gencode(self):
+        return "\tjr $ra\n"
+    def validate(self, _):
+        return True
+    def get_used(self):
+        return set()
+    def get_dfn(self):
+        return set()
+    def __str__(self):
+        return "ret"
 
 class BB:
     '''
@@ -725,10 +745,10 @@ class BB:
             if d in alive:
                 i.mark_as_used()
 
-    def assign_out_reg(self, vrmap):
+    def assign_out_reg(self, R):
         for v in self.out:
-            assert v in vrmap, "%s not allocated" % v
-            self.out_reg[v] = vrmap[v]
+            assert v in R or v in R.M, "%s not allocated" % v
+            self.out_reg[v] = R.get_reg_or_mem(v)
 
 class IR:
     def __str__(self):
@@ -803,7 +823,6 @@ class IR:
         f.write(".text\nmain:\n")
         for bb in self.bb:
             f.write(bb.gencode())
-        f.write("\tli $v0, 10\n\tsyscall\n")
         f.close()
     def finish(self):
         print(self)

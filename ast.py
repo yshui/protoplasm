@@ -1,4 +1,4 @@
-from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, parse_bbname, build_bbname
+from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, parse_bbname, build_bbname
 import copy
 def error(st):
         raise Exception("Unexpected {0}({1}) at {2}, {3}".
@@ -396,6 +396,9 @@ class Block:
     def emit(self, varv, ir):
         for w in self.expr_list:
             w.emit(varv, ir)
+        if self.is_top:
+            bb = ir.append_bb("Lend")
+            bb += [Ret()]
 
     def wellformed(self, _def):
         defined = copy.copy(_def)
@@ -411,6 +414,7 @@ class Block:
         return defined
     def __init__(self, elist, linenum=0):
         self.expr_list = elist
+        self.is_top = False
         self.linenum = linenum
     def gencode(self):
         assert self.wellformed(set())

@@ -64,11 +64,12 @@ def empty_block_removal(ir):
     stack = []
     nir = IR()
     changed = False
+    print("=============Remove empty blocks===================")
     for bb in ir.bb:
         assert not bb.phi, "Can perform block removal when bb has phinodes"
-        nxbb = BB(bb.name, bb.ins)
         if not bb.ins:
             #empty block
+            print("Empty block %s" % bb.name)
             stack.append(bb)
             changed = True
         else :
@@ -79,72 +80,161 @@ def empty_block_removal(ir):
         if not bb.ins:
             continue
         if not bb.br or bb.br.tgt not in jmap:
+            nxbb = BB(bb.name, bb.ins)
             nir += [nxbb]
             continue
         nbb = BB(bb.name)
         nbb += bb.nonbr_ins
         nbr = copy.copy(bb.br)
-        nbr.tgt = jmap[nbr.tgt]
+        if nbr.tgt:
+            nbr.tgt = jmap[nbr.tgt]
         nbb += [nbr]
         nir += [nbb]
     print(nir)
     nir.finish()
     return (changed, nir)
 
-def block_coalesce(ir):
-    removed = {}
-    nir = IR()
-    changed = True
+def jump_block_removal(ir):
     nextbb = {}
-    nbbmap = {}
+    prevbb = {}
     prev = None
+    nextbb[1] = ir.bb[0].name
+    prevbb[ir.bb[0].name] = 1
     for bb in ir.bb:
         if prev:
             if prev.fall_through:
-                nextbb[prev.name] = bb
+                nextbb[prev.name] = bb.name
+                prevbb[bb.name] = prev.name
             else :
+                nextbb[prev.name] = None
+                prevbb[bb.name] = None
+        prev = bb
+    nextbb[prev.name] = None
+    jmap = {}
+    removed = set()
+    changed = False
+    for bb in ir.bb:
+        if bb.nonbr_ins:
+            continue
+        if not bb.br:
+            continue
+        if bb.br.is_cond:
+            continue
+        nbb = bb.nxt
+        if not nbb:
+            continue
+        while nbb in jmap:
+            nbb = jmap[nbb]
+        final = nbb
+        nbb = bb.nxt
+        while nbb in jmap:
+            tmp = jmap[nbb]
+            jmap[nbb] = final
+            nbb = tmp
+        nbb = final
+        if prevbb[bb.name] and prevbb[nbb]:
+            continue
+        changed = True
+        removed |= {bb.name}
+        print("Redirect %s to %s" % (bb.name, nbb))
+        jmap[bb.name] = nbb
+        if prevbb[bb.name] and not prevbb[nbb]:
+            #nbb don't have fallthrough
+            #change nextbb pointer
+            print("%s now fall through to %s, %s" % (prevbb[bb.name], nbb, bb.name))
+            nextbb[prevbb[bb.name]] = nbb
+            prevbb[nbb] = prevbb[bb.name]
+    print(removed)
+    nir = IR()
+    nbbmap = {}
+    for bb in ir.bb:
+        if bb.name in removed:
+            continue
+        newbb = BB(bb.name)
+        newbb += bb.nonbr_ins
+        ni = copy.copy(bb.br)
+        if ni :
+            nbb = ni.tgt
+            while nbb in jmap:
+                nbb = jmap[nbb]
+            final = nbb
+            nbb = ni.tgt
+            while nbb in jmap:
+                tmp = jmap[nbb]
+                jmap[nbb] = final
+                nbb = tmp
+            nbb = final
+            ni.tgt = final
+            newbb += [ni]
+        nbbmap[bb.name] = newbb
+    bbb = set([x for x in prevbb if not prevbb[x] and x not in removed])
+    now = nextbb[1]
+    print(nextbb)
+    while True:
+        nir += [nbbmap[now]]
+        now = nextbb[now]
+        if not now:
+            if bbb:
+                now = bbb.pop()
+            else :
+                break
+    nir.finish()
+    return (changed, nir)
+
+def block_coalesce(ir):
+    removed = set()
+    nir = IR()
+    changed = True
+    nextbb = {}
+    bbb = set()
+    prev = None
+    nbbmap = {}
+    for bb in ir.bb:
+        if prev:
+            if prev.fall_through:
+                nextbb[prev.name] = bb.name
+            else :
+                bbb |= {bb.name}
                 nextbb[prev.name] = None
         prev = bb
     nextbb[prev.name] = None
+    print(nextbb)
     for bb in ir.bb:
         #if a is b's only succ, b is a's only pred
-        #prepend b to a
+        #append a to b
         #we need to rebuild the fallthrough chain
         nxbb = BB(bb.name, bb.ins)
+        nbbmap[bb.name] = nxbb
         if bb.name in removed:
             continue
         if len(bb.successors) != 1:
-            nbbmap[nxbb.name] = nxbb
             continue
         succ, = bb.successors
         succ = ir.bbmap[succ]
         if len(succ.predecessors) > 1:
-            nbbmap[nxbb.name] = nxbb
             continue
         assert bb.name in succ.predecessors
         if succ.phi:
-            nbbmap[nxbb.name] = nxbb
             continue
         nbb = BB(bb.name)
         nbb += bb.nonbr_ins
         nbb += succ.ins
         nextbb[bb.name] = nextbb[succ.name]
         del nextbb[succ.name]
+        bbb -= {succ.name}
+        nbbmap[bb.name] = nbb
         removed |= {succ.name}
         changed = True
 
-    print (nbbmap)
-    now = ir.bb[0]
-    nbbmap.pop(now.name)
-    while nbbmap:
-        nir += [now]
-        now = nextbb[now.name]
+    now = ir.bb[0].name
+    while True:
+        nir += [nbbmap[now]]
+        now = nextbb[now]
         if not now:
-            key = next(iter(nbbmap))
-            now = nbbmap.pop(key)
-        else :
-            nbbmap.pop(now.name)
-    nir += [now]
+            if bbb:
+                now = bbb.pop()
+            else :
+                break
     nir.finish()
 
     return (changed, nir)
@@ -235,38 +325,11 @@ def chain_breaker(ir):
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
     return (changed, nir)
 
-def any_reg(avail_reg):
-    'return any register, but prefer registers that are not being used'
-    if avail_reg:
-        return avail_reg.pop()
-    return next(iter(all_reg))
-
-def promote(v, avail_reg, vrmap, rvmap, ret, M):
-    reg = any_reg(avail_reg)
-    if v not in ret:
-        ret[v] = deque([reg])
-    else :
-        ret[v].append(reg)
-    if reg in rvmap:
-        e, mcell = M.get(rvmap[reg])
-        print("Demoted %s from %s to %s, %s" % (rvmap[reg], reg, mcell, e))
-        vrmap[rvmap[reg]] = mcell
-        ret[rvmap[reg]].append((e, mcell))
-    oldreg = "(none)"
-    if v in vrmap:
-        oldreg = str(vrmap[v])
-    rvmap[reg] = v
-    vrmap[v] = reg
-    print("Promoted %s from %s to %s" % (v, oldreg, reg))
-
 def allocate_bb(bb, bbmap):
     #allocate for phi
     ret = {}
-    avail_reg = set(all_reg)
-    rvmap = {}
-    vrmap = {}
     M = Memory()
-    only_pred = None
+    R = Registers(M)
     mem_phi = set()
     prmap = {}
     print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
@@ -278,17 +341,15 @@ def allocate_bb(bb, bbmap):
             #we assume chain_breaker has been run
             assert v in only_pred.out_reg
             vreg = only_pred.out_reg[v]
-            vrmap[v] = vreg
             ret[v] = deque([])
             if vreg.is_reg:
-                avail_reg -= {vreg}
-                rvmap[vreg] = v
+                R.reserve(v, vreg)
             else :
                 M.reserve(v, vreg)
     else :
         M2 = Memory()
+        R2 = Registers()
         mem = set()
-        nosrcreg = set(all_reg)
         for phi in bb.phi:
             for phibb, v in phi.srcs.items():
                 pbb = bbmap[phibb]
@@ -296,14 +357,11 @@ def allocate_bb(bb, bbmap):
                     continue
                 sreg = pbb.out_reg[v]
                 if not sreg.is_reg:
-                    #we don't reserve this memory
-                    #because our phi block generate can handle
-                    #the case where src and dst has same memory cell
-                    #is memory
                     if sreg not in M2:
                         M2.reserve(v, sreg)
-                    continue
-                nosrcreg -= {sreg}
+                else :
+                    if sreg not in R2:
+                        R2.reserve(v, sreg)
         #register preference:
         #same reg as src > same memory as src > reg different from src > other memory
         for phi in bb.phi:
@@ -316,8 +374,8 @@ def allocate_bb(bb, bbmap):
                     continue
                 srcreg = pbb.out_reg[v]
                 if srcreg.is_reg:
-                    if srcreg not in rvmap:
-                        avail_reg -= {srcreg}
+                    if srcreg not in R:
+                        R.reserve(phi.dst, srcreg)
                         reg = srcreg
                         break
                 else :
@@ -329,66 +387,69 @@ def allocate_bb(bb, bbmap):
             if not reg:
                 #try to avoid registers used by other src
                 #(so other phis will be able to use them)
-                if nosrcreg:
-                    reg = nosrcreg.pop()
-                    avail_reg -= {reg}
-                elif avail_reg:
-                    reg = avail_reg.pop()
-                else :
-                    #avoid using same memory as src so
-                    #other phis will be able to use them
-                    #        v----- change to M to test phi block gen
-                    _, reg = M.get(phi.dst)
+                reg = R2.get(phi.dst)
+                if reg:
+                    R.reserve(phi.dst, reg)
+            if not reg:
+                reg = R.get(phi.dst)
+            if not reg:
+                #avoid using same memory as src so
+                #other phis will be able to use them
+                #     v----- change to M to test phi block gen
+                e, reg = M2.get(phi.dst)
+                assert not e
+                M.reserve(phi.dst, reg)
             print("Phi allocation: %s -> %s" % (reg, phi.dst))
             ret[phi.dst] = deque([reg])
-            if reg.is_reg:
-                rvmap[reg] = phi.dst
-            else :
-                mem |= {phi.dst}
-            vrmap[phi.dst] = reg
             prmap[phi.dst] = reg
-        mem_phi = set(mem)
-        print("In mem phi")
-        _set_print(mem_phi)
     #phi allocation ends here
     print(M)
-    _dict_print(vrmap)
+    _dict_print(R.vrmap)
+    _dict_print(M.vmmap)
     _set_print(bb.In)
     for i in bb.ins:
         if i.is_phi:
             continue
         print(i)
         ds = i.get_dfn()
+        print(ds)
         u = i.get_used()
         for v in u:
-            assert(v in vrmap)
-            if not vrmap[v].is_reg:
-                promote(v, avail_reg, vrmap, rvmap, ret, M)
+            if v in R:
+                R.get(v) #get once to move reg to the end of spill list
+                continue
+            reg, s, sm = R.get_may_spill(v)
+            ret[v].append(reg)
+            if s:
+                assert s in ret, s
+                ret[s].append(sm)
 
         dreg = None
         for v in i.last_use:
-            assert v in vrmap, str(v)
-            M.drop(v)
-            dreg = vrmap[v]
-            avail_reg |= {vrmap[v]}
-            del rvmap[vrmap[v]]
-            del vrmap[v]
+            assert v in R
+            dreg = R.get(v)
+            R.drop_both(v)
         if not ds:
             continue
         d, = ds
+        print(d)
+        print("Last use: ")
+        _set_print(i.last_use)
         if len(i.last_use) == 1:
             #reuse the operand register
-            rvmap[dreg] = d
-            vrmap[d] = dreg
+            R.reserve(d, dreg)
             ret[d] = deque([dreg])
-            avail_reg -= {dreg}
             print("Reuse %s for %s" % (dreg, d))
         else :
             #more than one or none, reuse does not make sense
-            promote(d, avail_reg, vrmap, rvmap, ret, M)
-    bb.assign_out_reg(vrmap)
+            reg, s, sm = R.get_may_spill(d)
+            ret[d] = deque([reg])
+            print("xxx%s -> %s" % (reg, d))
+            if s:
+                ret[s].append(sm)
+    bb.assign_out_reg(R)
     _dict_print(bb.out_reg)
-    return (ret, mem_phi, prmap)
+    return (ret, prmap)
 
 def promote_replay_half(v, rvmap, vrmap, allocation):
     #promote v into reg, do store/load if necessary
@@ -430,7 +491,6 @@ def allocate(ir):
     allocated_pred = {}
     allocated_avail = {}
     allocation = {}
-    in_mem_phi = {}
     prmaps = {}
     for bb in ir.bb:
         total_pred[bb.name] = len(bb.predecessors)
@@ -445,7 +505,7 @@ def allocate(ir):
         h = queue.pop()
         queue2 -= {h}
         #allocate bb
-        allocation[h], in_mem_phi[h], prmaps[h] = allocate_bb(h, ir.bbmap)
+        allocation[h], prmaps[h] = allocate_bb(h, ir.bbmap)
         for nbb in h.successors:
             allocated_pred[nbb] += 1
             if allocated_pred[nbb] == total_pred[nbb] and nbb not in allocation:
@@ -470,18 +530,17 @@ def allocate(ir):
                     res += ("%s, " % reg)
         print(res)
 
-    #_dict_print(in_mem_phi)
 
     nir = IR()
     for bb in ir.bb:
         #generate new ir with registers
         #phi nodes is generated by its predecessors
+        print("!!!!!!!!%s!!!!!!!!" % bb.name)
         vrmap = {}
         rvmap = {}
         pred = None
         nbb = BB(bb.name)
         bballoc = allocation[bb]
-        bbmemphi = in_mem_phi[bb]
         if len(bb.predecessors) == 1:
             pred, = bb.predecessors
             pred = ir.bbmap[pred]
@@ -496,8 +555,6 @@ def allocate(ir):
                 vrmap[v] = bballoc[v].popleft()
                 if vrmap[v].is_reg:
                     rvmap[vrmap[v]] = v
-                else :
-                    assert v in bbmemphi, "%s has %s, but not in bbmemphi, %s" % (v, vrmap[v], bb.name)
         for i in bb.ins:
             if i.is_phi:
                 continue
@@ -524,7 +581,9 @@ def allocate(ir):
                 vrmap[oldv] = m
             for v in i.last_use:
                 del vrmap[v]
-            if ni.is_br:
+            if ni.is_br and ni.tgt:
+                #if the branch instruction has a target
+                #change the target to point to the phi block
                 print(ni)
                 ni.tgt = bb.name+"_"+ni.tgt
             nbb += [ni]
@@ -551,6 +610,7 @@ def allocate(ir):
     return (True, nir)
 
 def gen_phi_block(bb, sbb, prmap):
+    print("Gen Phi block, edge %s -> %s" % (bb.name, sbb.name))
     nbb = BB(bb.name+"_"+sbb.name)
     todo = set()
     src_reg = {} #any register holds src
@@ -563,11 +623,14 @@ def gen_phi_block(bb, sbb, prmap):
         dreg = prmap[dst]
         if not src_reg[src] and dreg.is_mem:
             #memory to memory
+            print("Invalid case 1, %s has no reg, and %s's dst is %s" % (src, dst, dreg))
             return False
         #does dreg conflict with anything?
         if dreg.is_reg and dreg in dsmap:
+            print("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg]))
             return False
         if dreg.is_mem and dreg.val in dsmap:
+            print("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg.val]))
             return False
         return True
 
@@ -715,12 +778,12 @@ def gen_phi_block(bb, sbb, prmap):
         #so only thing we do is storing srcs into memory
 
         #What we do is therefore:
-        # 1) get any registers from dsmap.keys()
+        # 1) get any registers from dsmap.keys(), that conflicts with some phi
         # 2) store it or move it to another register
 
         creg = None
-        for x in dsmap:
-            if isinstance(x, Register):
+        for x in phiregs:
+            if x in dsmap:
                 creg = x
                 break
         avail_reg = None
@@ -740,7 +803,7 @@ def gen_phi_block(bb, sbb, prmap):
                 print("Resolving conflict by %s(%s)->%s" % (src, creg, mcell))
             else :
                 #otherwise move to the free reg
-                reg = next(iter(avail_reg))
+                reg = avail_reg
                 src_reg[src] = reg
                 dsmap[reg] = src
                 s1ins.append(Arithm('+', reg, creg, 0))
@@ -771,7 +834,7 @@ def gen_phi_block(bb, sbb, prmap):
     if s0tmpreg:
         #tmpreg available during step 0 means we can use it and put all the
         #conflict resolution in step 2 into step 0
-        print("We have one tmpreg during step 0")
+        print("We have one tmpreg during step 0 (which is %s)" % tmpreg)
         tmpreg = s0tmpreg
         resolve_ins = s0ins
     else :
@@ -794,6 +857,7 @@ def gen_phi_block(bb, sbb, prmap):
         to_promote = None
         for src in todo:
             flag = True
+            assert src_rcv[src], src
             for dst in src_rcv[src]:
                 dmem = prmap[dst]
                 if dmem.val in dsmap:
@@ -812,6 +876,7 @@ def gen_phi_block(bb, sbb, prmap):
         print("promoting %s to resolve conflicts" % to_promote)
         _set_print(src_rcv[to_promote])
         pmem = src_mem[to_promote]
+        assert pmem, to_promote
         resolve_ins.append(Load(tmpreg, pmem))
         done = set()
         for dst in src_rcv[to_promote]:
@@ -832,21 +897,21 @@ def gen_phi_block(bb, sbb, prmap):
             #so store it to a new place to resolve conflict
             mcell = Cell(a_mem.pop())
             src_mem[to_promote] = mcell
-            resolve_ins.append(Store(tmpreg, mcell))
+            resolve_ins.append(Store(mcell, tmpreg))
         pairs = [1]
         while bool(pairs):
             pairs = []
             for src in todo:
-                if not src_reg:
+                if not src_reg[src]:
                     continue
                 for dst in src_rcv[src]:
-                    if prmap[dst] not in dsmap:
+                    if prmap[dst].val not in dsmap:
                         pairs.append((src, dst))
             for src, dst in pairs:
                 print("reg to mem(%s, %s)" % (src,dst))
                 s2ins.append(Store(prmap[dst], src_reg[src]))
                 src_rcv[src] -= {dst}
-                if not src_rcv:
+                if not src_rcv[src]:
                     todo -= {src}
     if popcell:
         s2ins.append(Load(tmpreg, popcell))

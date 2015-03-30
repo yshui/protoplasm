@@ -18,6 +18,7 @@ precedence = (
 def p_top(p):
     'top : stmt_list'
     p[0] = p[1]
+    p[0].is_top = True
 
 def p_stmt_list_single(p):
     'stmt_list : stmt'

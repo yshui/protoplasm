@@ -1,10 +1,11 @@
 from IR import Cell, Var, Register, Load, Store, all_reg
+from collections import OrderedDict
 class Registers:
     def __init__(self, M=None):
         self.avail_reg = set(all_reg)
         assert self.avail_reg, "No available register found!!"
         self.vrmap = {}
-        self.rvmap = {}
+        self.rvmap = OrderedDict() #ordered dict to support LRU
         self.M = M
     def __contains__(self, other):
         if other.is_reg:
@@ -23,7 +24,9 @@ class Registers:
         self.avail_reg -= {reg}
     def get(self, var):
         if var in self.vrmap:
-            return self.vrmap[var]
+            reg = self.vrmap[var]
+            self.rvmap.move_to_end(reg)
+            return reg
         if not self.avail_reg:
             return None
         reg = next(iter(self.avail_reg))
@@ -54,31 +57,43 @@ class Registers:
         assert var.is_var, o
         self.drop(var)
         self.M.drop(var)
+    def get_reg_or_mem(self, var):
+        assert self.M
+        if var in self.vrmap:
+            return self.vrmap[var]
+        if var in self.M.vmmap:
+            return self.M.vmmap[var]
+        return None
     def get_may_spill(self, var):
         assert self.M
         if var in self.vrmap:
+            reg = self.vrmap[var]
+            self.rvmap.move_to_end(reg)
             #the requested var is already in some register
-            return (self.vrmap[var], [])
-        ins = []
+            return (reg, None, None)
+        spilt = None
+        spmem = None
         reg = self.get(var)
         if not reg:
             #no reg found
-            #spill any register, later we might impl LRU policy
+            #spill register, in LRU order
             reg = next(iter(self.rvmap))
-            var = self.rvmap[reg]
-            self.drop(var)
+            oldvar = self.rvmap[reg]
+            self.drop(oldvar)
             self.reserve(var, reg)
-            e, mcell = self.M.get(var)
-            if not e:
-                ins.append(Store(mcell, reg))
-        #if already in memory
-        if var in self.M:
-            ins = [Load(reg, self.M.get(var))]
-        else :
-            #it is not in vrmap before, and it is not in memory either
+            e, mcell = self.M.get(oldvar)
+            spilt = oldvar
+            spmem = (e, mcell)
+            print("Demoted %s from %s to %s, %s" % (spilt, reg, mcell, e))
+        if var not in self.M:
+            #if it is not in vrmap before, and it is not in memory either
             #must be a newly defined dst
             assert var.dst
-        return (reg, ins)
+            print("Prmoted %s from nothing to %s" % (var, reg))
+        else :
+            print("Promoted %s from %s to %s" % (var, self.M.vmmap[var], reg))
+
+        return (reg, spilt, spmem)
 
 class Memory:
     def __init__(self):
