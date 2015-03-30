@@ -121,7 +121,7 @@ class Imm(BassOpr):
 
 
 class Var(BassOpr):
-    def __init__(self, var, dst=0):
+    def __init__(self, var, dst=False):
         self.val = var
         self.dst = dst
         self.used = False
@@ -175,7 +175,7 @@ class Nil:
     def allocate(self, _):
         return self
 
-def get_operand(val, dst=0):
+def get_operand(val, dst=False):
     if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell):
         if dst :
             assert (val.is_var and val.dst) or val.is_reg
@@ -240,7 +240,7 @@ class Arithm(NIns):
     def __init__(self, op, dst, opr1, opr2):
         assert op in self.opc
         self.op = self.opc[op]
-        self.dst = get_operand(dst, 1)
+        self.dst = get_operand(dst, True)
         self.opr1 = get_operand(opr1)
         if self.opr1.is_imm:
             assert self.opr1.val == 0
@@ -266,7 +266,7 @@ class IInpt(NIns):
         if dst is None:
             self.dst = Nil()
         else :
-            self.dst = get_operand(dst, 1)
+            self.dst = get_operand(dst, True)
     def validate(self, dfn):
         self.dst.validate(dfn)
     def allocate(self, regmap):
@@ -350,7 +350,7 @@ class Cmp(NIns):
         self.op = self.opc[op]
         self.src1 = get_operand(src1)
         self.src2 = get_operand(src2)
-        self.dst = get_operand(dst, 1)
+        self.dst = get_operand(dst, True)
         self.is_phi = False
         self.is_br = False
     def allocate(self, regmap):
@@ -419,7 +419,7 @@ class Phi:
             self.srcs[x] = get_operand(next(it))
         self.is_phi = True
         self.is_br = False
-        self.dst = get_operand(dst, 1)
+        self.dst = get_operand(dst, True)
     def mark_as_used(self):
         self.dst.mark_as_used()
     def mark_as_unused(self):
@@ -477,7 +477,7 @@ class Load(NIns):
             m = Imm(m)
         assert isinstance(m, Cell) or isinstance(m, Imm), str(m)
         if isinstance(dst, str):
-            dst = get_operand(dst, 1)
+            dst = get_operand(dst, True)
         assert isinstance(dst, Register) or isinstance(dst, Var)
         self.dst = dst
         self.m = m

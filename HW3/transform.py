@@ -1,6 +1,7 @@
 from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, Load, Store, Br, Register, all_reg
 from collections import deque
 from utils import _set_print, _dict_print
+from storage_models import Memory, Registers
 import copy
 def _phi_get_used(i):
     u = set()
@@ -258,46 +259,6 @@ def promote(v, avail_reg, vrmap, rvmap, ret, M):
     vrmap[v] = reg
     print("Promoted %s from %s to %s" % (v, oldreg, reg))
 
-class Memory:
-    def __init__(self):
-        self.top = 0
-        self.avail = set()
-        self.rsrv = set()
-        self.vmmap = {}
-    def reserve(self, var, pos):
-        assert isinstance(pos, Cell)
-        self.vmmap[var] = pos
-        pos = pos.val
-        if pos < self.top:
-            assert pos in self.avail
-            self.avail -= {pos}
-            return
-        self.rsrv |= {pos}
-    def get(self, var):
-        if var in self.vmmap:
-            return (True, self.vmmap[var])
-        if self.avail:
-            self.vmmap[var] = Cell(self.avail.pop(), var)
-        else :
-            while self.top in self.rsrv:
-                self.rsrv -= {self.top}
-                self.top += 1
-            self.vmmap[var] = Cell(self.top, var)
-            self.top += 1
-        return (False, self.vmmap[var])
-    def drop(self, var):
-        if var not in self.vmmap:
-            return
-        pos = self.vmmap[var].val
-        del self.vmmap[var]
-        if pos in self.rsrv:
-            self.rsrv -= {pos}
-            return
-        if pos == self.top-1:
-            self.top -= 1
-            return
-        self.avail |= {pos}
-
 def allocate_bb(bb, bbmap):
     #allocate for phi
     ret = {}
@@ -308,6 +269,7 @@ def allocate_bb(bb, bbmap):
     only_pred = None
     mem_phi = set()
     prmap = {}
+    print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
     if len(bb.predecessors)==1:
         assert not bb.phi
         only_pred, = bb.predecessors
@@ -324,22 +286,28 @@ def allocate_bb(bb, bbmap):
             else :
                 M.reserve(v, vreg)
     else :
+        M2 = Memory()
         mem = set()
-        phireg = set()
+        nosrcreg = set(all_reg)
         for phi in bb.phi:
             for phibb, v in phi.srcs.items():
                 pbb = bbmap[phibb]
                 if v not in pbb.out_reg:
                     continue
-                if not pbb.out_reg[v].is_reg:
+                sreg = pbb.out_reg[v]
+                if not sreg.is_reg:
+                    #we don't reserve this memory
+                    #because our phi block generate can handle
+                    #the case where src and dst has same memory cell
                     #is memory
-                    M.reserve(v, pbb.out_reg[v])
+                    if sreg not in M2:
+                        M2.reserve(v, sreg)
                     continue
-                phireg |= {pbb.out_reg[v]}
-                avail_reg -= {pbb.out_reg[v]}
+                nosrcreg -= {sreg}
         #register preference:
-        #reg in src >  reg not in any src > other reg > memory
+        #same reg as src > same memory as src > reg different from src > other memory
         for phi in bb.phi:
+            print(M)
             reg = None #reg in srcs not used
             for phibb, v in phi.srcs.items():
                 pbb = bbmap[phibb]
@@ -348,20 +316,32 @@ def allocate_bb(bb, bbmap):
                     continue
                 srcreg = pbb.out_reg[v]
                 if srcreg.is_reg:
-                    if srcreg in avail_reg:
+                    if srcreg not in rvmap:
+                        avail_reg -= {srcreg}
+                        reg = srcreg
+                        break
+                else :
+                    if srcreg not in M:
+                        #this memory is not used by any phi yet
+                        M.reserve(phi.dst, srcreg)
                         reg = srcreg
                         break
             if not reg:
-                if avail_reg:
+                #try to avoid registers used by other src
+                #(so other phis will be able to use them)
+                if nosrcreg:
+                    reg = nosrcreg.pop()
+                    avail_reg -= {reg}
+                elif avail_reg:
                     reg = avail_reg.pop()
-                elif phireg:
-                    reg = phireg.pop()
                 else :
+                    #avoid using same memory as src so
+                    #other phis will be able to use them
+                    #        v----- change to M to test phi block gen
                     _, reg = M.get(phi.dst)
+            print("Phi allocation: %s -> %s" % (reg, phi.dst))
             ret[phi.dst] = deque([reg])
             if reg.is_reg:
-                avail_reg -= {reg}
-                assert reg not in rvmap
                 rvmap[reg] = phi.dst
             else :
                 mem |= {phi.dst}
@@ -370,7 +350,8 @@ def allocate_bb(bb, bbmap):
         mem_phi = set(mem)
         print("In mem phi")
         _set_print(mem_phi)
-    print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
+    #phi allocation ends here
+    print(M)
     _dict_print(vrmap)
     _set_print(bb.In)
     for i in bb.ins:
@@ -548,220 +529,14 @@ def allocate(ir):
                 ni.tgt = bb.name+"_"+ni.tgt
             nbb += [ni]
         nir += [nbb]
+
         if not bb.successors:
             continue
         phibb = [None, None]
         assert len(bb.successors) <= 2
         for succ in bb.successors:
             sbb = ir.bbmap[succ]
-            nbb = BB(bb.name+"_"+succ)
-            phi = []
-            src_regs = {}
-            orig_regs = {}
-            src_mems = {}
-            src_rcv = {}
-            rsrcmap = {}
-            avail_reg = set(all_reg)
-            phi_reg = set()
-            M = Memory()
-            for i in sbb.phi:
-                src = i.srcs[bb.name]
-                dst = i.dst
-                assert dst in prmaps[sbb], "%s\n%s" % (sbb, dst)
-                dst_reg = prmaps[sbb][dst]
-                if src.is_imm:
-                    nbb += [Load(dst_reg, src)]
-                    continue
-                phi += [i]
-                src_reg = bb.out_reg[src]
-                if dst_reg.is_mem:
-                    M.reserve(dst, dst_reg)
-                if src in src_rcv:
-                    src_rcv[src] += 1
-                else :
-                    src_rcv[src] = 1
-                if src_reg.is_reg:
-                    rsrcmap[src_reg] = src
-                    src_regs[src] = {src_reg}
-                    orig_regs[src] = src_reg
-                    src_mems[src] = []
-                    avail_reg -= {src_reg}
-                else :
-                    orig_regs[src] = None
-                    src_regs[src] = set()
-                    src_mems[src] = [src_reg]
-                    M.reserve(src, src_reg)
-            while phi:
-                progress = True
-                while progress:
-                    #finish anything with no conflict
-                    #definition of no conflict:
-                    #   this src->dst move will not demote any src from reg to memory
-                    #Case 1, src come from reg
-                    #1) phi.dst's reg is the same as src's reg
-                    #2) phi.dst's reg is not used by any src
-                    #3) phi.dst's reg is used by some src, but this src is held by another register
-                    #3.5) phi.dst's reg is used by some src, but that src is no longer needed
-                    #4) phi.dst is memory
-                    #Case 2, src come from mem
-                    #1) phi.dst is a register that is used by no src, or this src has other holders
-                    nphi = []
-                    progress = False
-                    for i in phi:
-                        dst = i.dst
-                        name = bb.name
-                        src = i.srcs[name]
-                        dreg = prmaps[sbb][dst]
-                        sregs = src_regs[src]
-                        other_src = None
-                        nsregs = None
-                        refcount = 0
-                        if dreg.is_reg and dreg in rsrcmap:
-                            other_src = rsrcmap[dreg]
-                            nsregs = src_regs[other_src]-{dreg}
-                        if other_src in src_rcv:
-                            refcount = src_rcv[other_src]
-                        if not sregs:
-                            assert src_mems[src]
-                            if dreg.is_reg and refcount <= 0:
-                                progress = True
-                                src_rcv[src] -= 1
-                                phi_reg |= {dreg}
-                                avail_reg -= {dreg}
-                                nbb += [Load(dreg, src_mems[src][0])]
-                                continue
-                            continue
-                        if dreg.is_mem:
-                            #case 4 memory
-                            #store from any register hold src
-                            print("case 4: %s, %s: %s" % (src, dst, dreg))
-                            nbb += [Store(dreg, next(iter(sregs)))]
-                            src_mems[src].append(dreg)
-                            src_rcv[src] -= 1
-                            progress = True
-                            continue
-                        if dreg in sregs:
-                            #case 1 dreg already hold src
-                            print("case 1: %s, %s: %s" % (src, dst, dreg))
-                            progress = True
-                            src_rcv[src] -= 1
-                            phi_reg |= {dreg}
-                            avail_reg -= {dreg}
-                            continue
-                        if refcount <= 0 or nsregs:
-                            #case 2, 3, 3.5
-                            assert sregs, "%s don't have register, %s, %s" % (src, name, i)
-                            _sreg = next(iter(sregs))
-                            if refcount <= 0:
-                                if other_src:
-                                    if other_src in src_rcv:
-                                        del src_rcv[other_src]
-                                    oreg = orig_regs[other_src]
-                                    if oreg and oreg not in phi_reg:
-                                        avail_reg |= {oreg}
-                                    del src_regs[other_src]
-                                    del src_mems[other_src]
-                            print("case 2, 3, 3.5: %s, %s: %s->%s" % (src, dst, _sreg, dreg))
-                            nbb += [Arithm('+', dreg, _sreg, 0)]
-                            src_regs[src] |= {dreg}
-                            if other_src in src_regs:
-                                src_regs[other_src] -= {dreg}
-                            src_rcv[src] -= 1
-                            progress = True
-                            phi_reg |= {dreg}
-                            avail_reg -= {dreg}
-                            continue
-                        nphi.append(i)
-                    phi = nphi
-                if not phi:
-                    break
-                #demote any src to memory
-                demote = set()
-                src_rcv = set([i for i in src_rcv if src_rcv[i] > 0])
-                demote = set([next(iter(src_rcv))])
-                queue = set(demote)
-                while queue:
-                    dmt = queue.pop()
-                    for i in phi:
-                        dmt = i.srcs[bb.name]
-                        if dmt not in demote:
-                            continue
-                        dst_reg = prmaps[sbb][i.dst]
-                        assert dst_reg.is_reg
-                        if dst_reg not in rsrcmap:
-                            continue
-                        osrc = rsrcmap[dst_reg]
-                        if osrc not in src_rcv or src_rcv[osrc] <= 0:
-                            continue
-                        queue |= {osrc}
-                        demote |= {osrc}
-                for dmt in demote:
-                    if not src_mems[dmt]:
-                        mcell = M.get(dmt)
-                        reg = next(iter(src_regs[dmt]))
-                        nbb += [Store(mcell, reg)]
-                    else :
-                        mcell = src_mems[dmt][0]
-                    if orig_regs[dmt] not in phi_reg:
-                        avail_reg |= {orig_regs[dmt]}
-                #handle mem to mem
-                nphi = []
-                tmpreg = None
-                tvar = Var("0")
-                if avail_reg:
-                    tmpreg = next(iter(avail_reg))
-                need_pop = False
-                for dmt in demote:
-                    mem_dst = []
-                    for i in phi:
-                        ss = i.srcs[bb.name]
-                        if dmt != ss:
-                            continue
-                        dst_reg = prmaps[sbb][i.dst]
-                        if not dst_reg.is_mem:
-                            continue
-                        mem_dst.append(dst_reg)
-                    if mem_dst:
-                        if not tmpreg:
-                            #use $t0
-                            mcell = M.get(tvar)
-                            nbb += [Store(mcell, Register("t0"))]
-                            tmpreg = Register("t0")
-                            need_pop = True
-                        if not src_mems[dmt]:
-                            mcell = M.get(dmt)
-                        else :
-                            mcell = src_mems[dmt][0]
-                        nbb += [Load(tmpreg, mcell)]
-                        for dr in mem_dst:
-                            nbb += [Store(dr, tmpreg)]
-                #now all the mem to mem is handle, we don't need tmpreg anymore
-                if need_pop:
-                    mcell = M.get(tvar)
-                    nbb += [Load(Register("t0"), mcell)]
-                    M.drop(tvar)
-                for i in phi:
-                    dmt = i.srcs[bb.name]
-                    if dmt not in demote:
-                        nphi += [i]
-                        continue
-                    if not src_mems[dmt]:
-                        mcell = M.get(dmt)
-                    dst = i.dst
-                    dst_reg = prmaps[sbb][dst]
-                    if dst_reg.is_reg:
-                        nbb += [Load(dst_reg, mcell)]
-                    else :
-                        continue
-                phi = nphi
-                for dmt in demote:
-                    if not src_mems[dmt]:
-                        M.drop(dmt)
-                    del src_rcv[dmt]
-                    del src_regs[dmt]
-                    del src_mems[dmt]
-
-            nbb += [Br(0, None, succ)]
+            nbb = gen_phi_block(bb, sbb, prmaps[sbb])
             #fallthrough should be put right after
             if not bb.br or not bb.fall_through:
                 phibb = [nbb]
@@ -774,3 +549,309 @@ def allocate(ir):
         nir += phibb
     nir.finish()
     return (True, nir)
+
+def gen_phi_block(bb, sbb, prmap):
+    nbb = BB(bb.name+"_"+sbb.name)
+    todo = set()
+    src_reg = {} #any register holds src
+    src_mem = {} #any memory cell holds src
+    src_rcv = {} #all the phis for a src
+    dsmap = {} #map from a conflict entry to the corresponding src
+    a_mem = set(range(0, 4*len(sbb.phi))) #which memory cell is free? used for finding temp memory cell
+    def valid_move(src, dst):
+        nonlocal src_reg, src_mem, prmap, dsmap
+        dreg = prmap[dst]
+        if not src_reg[src] and dreg.is_mem:
+            #memory to memory
+            return False
+        #does dreg conflict with anything?
+        if dreg.is_reg and dreg in dsmap:
+            return False
+        if dreg.is_mem and dreg.val in dsmap:
+            return False
+        return True
+
+    def do_move(src, dst):
+        nonlocal src_reg, src_mem, src_rcv, prmap, dsmap
+        nonlocal todo
+        dreg = prmap[dst]
+        #first try register
+        sreg = src_reg[src]
+        smem = src_mem[src]
+        ret = []
+        if dreg.is_mem:
+            #writing to memory
+            #must be from a register
+            assert sreg
+            if dreg.val in dsmap:
+                #we overwrite something
+                src_mem[dsmap[dreg.val]] = None
+                del dsmap[dreg.val]
+            #use this memory cell instead of the original
+            #memory cell. Because a phi memory cell is guaranteed to not
+            #have conflicts
+            if smem and smem.val in dsmap:
+                del dsmap[smem.val]
+            src_mem[src] = dreg
+            ret = [Store(dreg, sreg)]
+        else :
+            #move/load into register
+            if dreg in dsmap:
+                #we are overwriting some src
+                src_reg[dsmap[dreg]] = None
+                del dsmap[dreg]
+            #prefer phi register over original src register
+            if sreg in dsmap:
+                del dsmap[sreg]
+            src_reg[src] = dreg
+            if sreg:
+                ret = [Arithm('+', dreg, sreg, 0)]
+            else :
+                ret = [Load(dreg, smem)]
+        #one phi done, remove from src_rcv
+        src_rcv[src] -= {dst}
+        if not src_rcv[src]:
+            #we no longer need this src
+            #so remove it from conflicts
+            if sreg in dsmap:
+                del dsmap[sreg]
+            if smem and smem.val in dsmap:
+                del dsmap[smem.val]
+            todo -= {src}
+        return ret
+    #do_move end
+
+    nosrcreg = set(all_reg)
+    #preprocessing, filling in the needed maps
+    for i in sbb.phi:
+        dst = i.dst
+        dreg = prmap[dst]
+        src = i.srcs[bb.name]
+        if src.is_imm:
+            continue
+        sreg = bb.out_reg[src]
+        if src not in src_rcv:
+            src_rcv[src] = {dst}
+        else :
+            src_rcv[src] |= {dst}
+        if sreg.is_mem:
+            src_mem[src] = sreg
+            src_reg[src] = None
+            dsmap[sreg.val] = src
+            a_mem -= {sreg.val}
+        else :
+            src_mem[src] = None
+            src_reg[src] = sreg
+            dsmap[sreg] = src
+            nosrcreg -= {sreg}
+        if dreg.is_mem:
+            a_mem -= {dreg.val}
+        if sreg == dreg:
+            if dreg.is_mem:
+                del dsmap[sreg.val]
+            else :
+                del dsmap[sreg]
+            src_rcv[src] -= {dst}
+            continue
+
+    #calculate free registers
+    phiregs = set([prmap[i.dst] for i in sbb.phi if prmap[i.dst].is_reg])
+    nophiregs = set(all_reg)-phiregs
+    todo = set([x for x in src_rcv if src_rcv[x]])
+
+    #step 0
+    #handle all imm srcs
+    s0ins = []
+    immmap = {}
+    tmpreg = False
+    for i in sbb.phi:
+        src = i.srcs[bb.name]
+        if not src.is_imm:
+            continue
+        if src.val not in immmap:
+            immmap[src.val] = set()
+        dreg = prmap[i.dst]
+        if dreg.is_mem:
+            tmpreg = True
+        immmap[src.val] |= {i.dst.val}
+    popcell = None
+    if nosrcreg:
+        tmpreg = next(iter(nosrcreg)) #we have a free reg, grab it any way
+    elif tmpreg:
+        popcell = Cell(next(iter(a_mem)))
+        tmpreg = next(iter(all_reg))
+        s0ins.append(Store(popcell, tmpreg))
+    for val in immmap:
+        reg_set = False
+        for dst in immmap[val]:
+            dreg = prmap[i.dst]
+            if dreg.is_reg:
+                s0ins.append(Load(dreg, val))
+            else :
+                if not reg_set:
+                    s0ins.append(Load(tmpreg, val))
+                    reg_set = True
+                s0ins.append(Store(dreg, tmpreg))
+
+    s0tmpreg = tmpreg
+
+    #step 1
+    #restore popcell used in step 0 first
+    s1ins = []
+    if popcell:
+        s1ins.append(Load(tmpreg, popcell))
+    #Real work is done here
+    while todo:
+        #First step, we only care register dsts
+        #we do memory dsts when possible, but we not necessarily finish all of them
+        pairs = [1]
+        while bool(pairs):
+            pairs = [(src, dst) for src in todo for dst in src_rcv[src] if valid_move(src, dst)]
+            for src, dst in pairs:
+                print("do_move(%s, %s)" % (src,dst))
+                s1ins += do_move(src, dst)
+        #no action available, trying to improve the situation
+        #we only care about making register dsts available
+        #so only thing we do is storing srcs into memory
+
+        #What we do is therefore:
+        # 1) get any registers from dsmap.keys()
+        # 2) store it or move it to another register
+
+        creg = None
+        for x in dsmap:
+            if isinstance(x, Register):
+                creg = x
+                break
+        avail_reg = None
+        for x in nophiregs:
+            if x not in dsmap:
+                avail_reg = x
+                break
+        if creg:
+            src = dsmap[creg]
+            del dsmap[creg]
+            if not avail_reg:
+                #no free reg, store to memory
+                mcell = Cell(a_mem.pop())
+                src_mem[src] = mcell
+                src_reg[src] = None
+                s1ins.append(Store(mcell, creg))
+                print("Resolving conflict by %s(%s)->%s" % (src, creg, mcell))
+            else :
+                #otherwise move to the free reg
+                reg = next(iter(avail_reg))
+                src_reg[src] = reg
+                dsmap[reg] = src
+                s1ins.append(Arithm('+', reg, creg, 0))
+                print("Resolving conflict by %s(%s)->%s" % (src, creg, reg))
+        else :
+            #there's no register in dsmap, and there're no possible moves
+            #which means all remaining dsts are memory
+            break
+    #while todo end
+
+    end = Br(0, None, sbb.name)
+    if not todo:
+        nbb += s0ins
+        nbb += s1ins
+        nbb += [end]
+        return nbb
+
+    #step 2
+    s2ins = []
+    #when we reach this point, all dsts are memory
+    #obviously, the only thing preventing us from doing work
+    #is conflicts
+
+    #we might need a temporary register
+    resolve_ins = s2ins
+    popcell = None
+    tmpreg = None
+    if s0tmpreg:
+        #tmpreg available during step 0 means we can use it and put all the
+        #conflict resolution in step 2 into step 0
+        print("We have one tmpreg during step 0")
+        tmpreg = s0tmpreg
+        resolve_ins = s0ins
+    else :
+        avail_reg = None
+        for x in nophiregs:
+            if x not in dsmap:
+                avail_reg = x
+                break
+        if not avail_reg:
+            popcell = Cell(a_mem.pop())
+            tmpreg = Register("t0")
+            s2ins.append(Store(popcell, tmpreg))
+        else :
+            tmpreg = avail_reg
+
+    print("First phase done")
+    while todo:
+        #pick any src, load it, do all the valid moves, store it somewhere else
+        #first see it we can find any src of whom all moves are valid
+        to_promote = None
+        for src in todo:
+            flag = True
+            for dst in src_rcv[src]:
+                dmem = prmap[dst]
+                if dmem.val in dsmap:
+                    flag = False
+                    break
+            if flag:
+                to_promote = src
+                break
+        #otherwise we choose any one
+        if not to_promote:
+            for src in todo:
+                if src_mem[src].val in dsmap:
+                    to_promote = src
+                    break
+        assert to_promote
+        print("promoting %s to resolve conflicts" % to_promote)
+        _set_print(src_rcv[to_promote])
+        pmem = src_mem[to_promote]
+        resolve_ins.append(Load(tmpreg, pmem))
+        done = set()
+        for dst in src_rcv[to_promote]:
+            dmem = prmap[dst]
+            if dmem.val in dsmap:
+                continue
+            resolve_ins.append(Store(dmem, tmpreg))
+            done |= {dst}
+        src_rcv[to_promote] -= done
+        if pmem.val in dsmap:
+            del dsmap[pmem.val]
+        if not src_rcv[to_promote]:
+            #this to_promote is selected in first step
+            #so no need to store it again
+            todo -= {to_promote}
+        else :
+            #this to_promote is in dsmap
+            #so store it to a new place to resolve conflict
+            mcell = Cell(a_mem.pop())
+            src_mem[to_promote] = mcell
+            resolve_ins.append(Store(tmpreg, mcell))
+        pairs = [1]
+        while bool(pairs):
+            pairs = []
+            for src in todo:
+                if not src_reg:
+                    continue
+                for dst in src_rcv[src]:
+                    if prmap[dst] not in dsmap:
+                        pairs.append((src, dst))
+            for src, dst in pairs:
+                print("reg to mem(%s, %s)" % (src,dst))
+                s2ins.append(Store(prmap[dst], src_reg[src]))
+                src_rcv[src] -= {dst}
+                if not src_rcv:
+                    todo -= {src}
+    if popcell:
+        s2ins.append(Load(tmpreg, popcell))
+    nbb += s0ins
+    nbb += s1ins
+    nbb += s2ins
+    nbb += [end]
+    return nbb
