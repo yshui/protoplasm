@@ -1,32 +1,6 @@
 from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret
 import copy
-
-def parse_bbname(name):
-    ret = [0, 0, 0, 0]
-    ep = name.find('EP')
-    if ep >= 0:
-        ret[3] = int(name[ep+2:])
-        name = name[:ep]
-    ep = name.find('T')
-    if ep >= 0:
-        ret[2] = int(name[ep+1:])
-        name = name[:ep]
-    ep = name.find('O')
-    if ep >= 0:
-        ret[1] = int(name[ep+1:])
-        name = name[:ep]
-    ret[0] = int(name[1:])
-    return ret
-
-def build_bbname(no, o, t, ep):
-    name = "L"+str(no[0])
-    if no[1]+o:
-        name += "O"+str(no[1]+o)
-    if no[2]+t:
-        name += "T"+str(no[2]+t)
-    if no[3]+ep:
-        name += "EP"+str(no[3]+ep)
-    return name
+import logging
 
 class VarVer:
     #this class is used to keep track of variable version
@@ -84,8 +58,8 @@ class UOP(Expr):
         if self.is_constant:
             self.const_emit(varv, ir, dst)
             return
-        bb = ir.last_bb
         copr = self.opr.get_result(varv, ir)
+        bb = ir.last_bb
         cdst = varv.next_ver(dst)
         if self.op == '!':
             bb += [Cmp('==', copr, 0, cdst)]
@@ -121,11 +95,11 @@ class BinOP(Expr):
         if self.is_constant:
             self.const_emit(varv, ir, dst)
             return
-        bb = ir.last_bb
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
         if self.op not in {'&&', '||'}:
             lres = self.lopr.get_result(varv, ir)
             rres = self.ropr.get_result(varv, ir)
+            bb = ir.last_bb
             dst = varv.next_ver(dst)
             if self.op in arithm:
                 if isinstance(lres, int) and self.op in {'//', '%', '-'}:
@@ -135,30 +109,36 @@ class BinOP(Expr):
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
                 bb += [Cmp(self.op, lres, rres, dst)]
-        elif self.op == '&&':
+        elif self.op in {'&&', '||'}:
+            #emit IR for left operand first
             lres = self.lopr.get_result(varv, ir)
-            pbb = ir.append_bb(None)
-            pbbname = parse_bbname(pbb.name)
-            epname = build_bbname(pbbname, 0, 0, 1)
-            bb += [Br(1, lres, epname, pbb.name)]
+            bb = ir.last_bb
+            prologue_name = bb.name
+            epname = ir.next_name()
+
+            roprbb = ir.append_bb(None)
+            brop = 1
+            if self.op == '||':
+                brop = 2
+            #jump depending on the left operand.
+            #for && jump to epilogue if left == 0
+            #for || jump to epilogue if left != 0
+            bb += [Br(brop, lres, epname, roprbb.name)]
+
+            #emit IR for right operand
             rres = self.ropr.get_result(varv, ir)
-            bb2 = ir.last_bb
-            bb2 += [Br(0, None, epname, None)]
-            bb3 = ir.append_bb(epname)
+            bb = ir.last_bb
+            bb += [Br(0, None, epname, None)]
+
+            bb = ir.append_bb(epname)
             dst = varv.next_ver(dst)
-            bb3 += [Phi(dst, bb.name, 0, bb2.name, rres)]
-        elif self.op == '||':
-            lres = self.lopr.get_result(varv, ir)
-            pbb = ir.append_bb(None)
-            pbbname = parse_bbname(pbb.name)
-            epname = build_bbname(pbbname, 0, 0, 1)
-            bb += [Br(2, lres, epname, pbb.name)]
-            rres = self.ropr.get_result(varv, ir)
-            bb2 = ir.last_bb
-            bb2 += [Br(0, None, epname, None)]
-            bb3 = ir.append_bb(epname)
-            dst = varv.next_ver(dst)
-            bb3 += [Phi(dst, bb.name, lres, bb2.name, rres)]
+
+            #generate result
+            #for &&, if we jump from prologue, result = 0, otherwise = right operand
+            #for ||, if we jump from prologue result = left, otherwise = right
+            if self.op == '&&':
+                lres = 0
+            bb += [Phi(dst, prologue_name, lres, roprbb.name, rres)]
         else :
             assert False
 
@@ -302,12 +282,11 @@ class If:
         if self.e:
             edfn = self.e.get_defined()
 
-        prologue = ir.last_bb
-        pbbname = parse_bbname(prologue.name)
-        tbbname = build_bbname(pbbname, 0, 1, 0)
-        epname = build_bbname(pbbname, 0, 0, 1)
-        ebbname = build_bbname(pbbname, 1, 0, 0)
+        tbbname = ir.next_name()
+        epname = ir.next_name()
+        ebbname = ir.next_name()
         res = self.cond.get_result(varv, ir)
+        prologue = ir.last_bb
         if self.e :
             prologue += [Br(1, res, ebbname, tbbname)]
         else :
@@ -384,44 +363,51 @@ class While:
     def __str__(self):
         return 'While('+str(self.cond)+')->'+str(self.do)
     def emit(self, varv, ir):
-        prologue = ir.last_bb
-        pbbname = parse_bbname(prologue.name)
-        epname = build_bbname(pbbname, 0, 0, 1)
-        res = self.cond.get_result(varv, ir)
-        body = ir.append_bb(None)
-        prologue += [Br(1, res, epname, body.name)]
-        dfn = self.do.get_defined()
-        pdfn = varv.get_dfn()
-        old_var = {}
-        for v in dfn&pdfn:
-            old_var[v] = varv.curr_ver(v)
+        before = ir.last_bb
+        prologue_name = ir.next_name()
+        before += [Br(0, None, prologue_name, None)]
+
+        prologue = ir.append_bb(prologue_name)
+        epname = ir.next_name()
+        bname = ir.next_name()
 
         #emit placeholder phi nodes
         #since we don't know the final
         #variable name at the end of the loop
+        dfn = self.do.get_defined()
+        pdfn = varv.get_dfn()
         phis = []
+        var_phi = {}
         for v in dfn&pdfn:
+            oldv = varv.curr_ver(v)
             nv = varv.next_ver(v)
-            phis.append(Phi(nv, prologue.name, old_var[v], body.name, "%"+v))
-        body += phis
+            var_phi[v] = nv
+            i = Phi(nv, before.name, oldv, bname, "%"+v)
+            phis.append(i)
+        prologue += phis
+
+        res = self.cond.get_result(varv, ir)
+        prologue = ir.last_bb
+        prologue += [Br(1, res, epname, bname)]
+
+        body = ir.append_bb(bname)
         bname = body.name
         self.do.emit(varv, ir)
 
         #replace the names in phi nodes
         body = ir.last_bb
-        res2 = self.cond.get_result(varv, ir)
-        body += [Br(2, res2, bname, epname)]
-        for phi in phis:
-            v = phi.srcs[bname].val
-            phi.del_source(bname)
-            phi.set_source(body.name, varv.curr_ver(v))
+        body += [Br(0, None, prologue_name, None)]
+
+        #replace placeholder name with real names
+        for i in phis:
+            v = i.srcs[bname].val
+            i.del_source(bname)
+            i.set_source(body.name, varv.curr_ver(v))
 
         epilogue = ir.append_bb(epname)
-        #add phi nodes
-        for v in dfn&pdfn:
-            lv = varv.curr_ver(v)
-            nv = varv.next_ver(v)
-            epilogue += [Phi(nv, prologue.name, old_var[v], body.name, lv)]
+        for v in var_phi:
+            dst = varv.next_ver(v)
+            epilogue += [Arithm('+', dst, var_phi[v], 0)]
 
     def wellformed(self, defined):
         return self.do.wellformed(defined)

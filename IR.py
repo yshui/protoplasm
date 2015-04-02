@@ -409,7 +409,7 @@ class Phi:
             logging.debug("{0} is defined in {1}".format(var, src))
         for pred in bb.preds:
             assert pred in self.srcs
-        assert len(bb.preds) == len(self.srcs)
+        assert len(bb.preds) == len(self.srcs), "%s %s" % (bb, self)
     def __str__(self):
         res = "%s = phi " % self.dst
         for x, y in self.srcs.items():
@@ -600,8 +600,7 @@ class BB:
     def __iadd__(self, _ins):
         ins = copy.copy(_ins)
         while ins:
-            if self.br:
-                raise Exception("Appending instruction after end of BB")
+            assert not self.br, "Appending instruction after end of BB %s" % self
             i = ins.pop(0)
             if i.is_phi:
                 if self.ins:
@@ -677,20 +676,23 @@ class IR:
         else :
             self.bb = []
         self.bbmap = {}
-        self.bbcnt = 0
+        self.namecnt = 0
 
     def __iadd__(self, o):
         for i in o:
-            if i.name in self.bbmap:
-                raise Exception("Basic blocks with duplicated name")
+            assert i.name not in self.bbmap, "Basic blocks with duplicated name "+i.name+str(self.bbmap)
             self.bbmap[i.name] = i
             self.bb.append(i)
-        self.bbcnt += len(o)
         return self
 
-    def append_bb(self, name=None):
+    def next_name(self):
+        res = "L"+str(self.namecnt)
+        self.namecnt += 1
+        return res
+
+    def append_bb(self, name):
         if not name:
-            name = 'L'+str(self.bbcnt)
+            name = self.next_name()
         r = BB(name)
         self += [r]
         return r
