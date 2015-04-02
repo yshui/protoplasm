@@ -1,6 +1,6 @@
 import copy
-import re
-from utils import _str_set, _dict_print
+from utils import _str_set, _dict_print, _set_print
+from functools import reduce
 
 usable_reg = []
 for __i in range(0, 2):
@@ -151,12 +151,6 @@ class Var(BassOpr):
             regmap[self].xvar = self
             return regmap[self]
         return self
-    def mark_as_used(self):
-        assert self.dst
-        self.used = True
-    def mark_as_unused(self):
-        assert self.dst
-        self.used = False
 
 class Nil:
     def __init__(self, var=0, dst=0):
@@ -203,10 +197,6 @@ class NIns(BaseIns):
     is_phi = False
     def __init__(self):
         self.dst = None
-    def mark_as_used(self):
-        self.dst.mark_as_used()
-    def mark_as_unused(self):
-        self.dst.mark_as_unused()
     @property
     def used(self):
         if self.dst.is_var:
@@ -255,7 +245,7 @@ class Arithm(NIns):
         self.opr2.validate(dfn)
         self.dst.validate(dfn)
     def __str__(self):
-        res = "%s %s, %s, %s" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
+        res = "%s = %s, %s, %s" % (self.dst, self.opname[self.op], str(self.opr1), str(self.opr2))
         res += gen_rvmap(self.dst, self.opr1, self.opr2)
         return res
     def get_used(self):
@@ -279,19 +269,13 @@ class IInpt(NIns):
           assert self.dst.is_reg
           out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
-    def mark_as_used(self):
-        if not self.dst.is_nil:
-            self.dst.mark_as_used()
-    def mark_as_unused(self):
-        if not self.dst.is_nil:
-            self.dst.mark_as_unused()
     @property
     def used(self):
         if not self.dst.is_nil:
             return self.dst.used
         return True
     def __str__(self):
-        return "input "+str(self.dst)+gen_rvmap(self.dst)
+        return "%s = input " % self.dst
 
 class IPrnt(NIns):
     def __init__(self, var):
@@ -303,11 +287,9 @@ class IPrnt(NIns):
     def get_dfn(self):
         return set()
     def __str__(self):
-        return "print "+str(self.var)+gen_rvmap(self.var)
+        return "print %s" % self.var
     def get_used(self):
         return self.var.get_used()
-    def mark_as_used(self):
-        pass
     @property
     def used(self):
         return True
@@ -365,8 +347,7 @@ class Cmp(NIns):
         self.src2.validate(dfn)
         self.dst.validate(dfn)
     def __str__(self):
-        res = self.opname[self.op]+" "+str(self.dst)+", "+str(self.src1)+", "+str(self.src2)
-        res += gen_rvmap(self.dst, self.src1, self.src2)
+        res = "%s = cmp %s %s, %s" % (self.dst, self.opname[self.op], self.src1, self.src2)
         return res
 
 class Br(BaseIns):
@@ -376,13 +357,12 @@ class Br(BaseIns):
             1 : "beqz",
             2 : "bnez",
     }
-    def __init__(self, op, src, target):
+    def __init__(self, op, src, target, target2):
         self.src = get_operand(src)
-        self.tgt = target
+        self.tgt = [target, target2]
         self.op = op
         self.is_br = True
         self.is_phi = False
-        self.is_cond = (op != 0)
         self.used = True
     def validate(self, dfn):
         self.src.validate(dfn)
@@ -395,17 +375,22 @@ class Br(BaseIns):
         if self.src:
             return self.src.get_used()
         return set()
-    def gencode(self):
-        real_tgt = self.tgt
+    def gencode(self, nextbb):
         if self.op == 0:
-            return "\tb "+real_tgt+"\n"
+            if self.tgt[0] != nextbb:
+                return "\tb "+self.tgt[0]+"\n"
+            else :
+                return ""
         assert self.src.is_reg
-        return "\t"+self.brname[self.op]+" "+str(self.src)+", "+real_tgt+"\n"
+        res = "\t%s %s, %s\n" % (self.brname[self.op], self.src, self.tgt[0])
+        if self.tgt[1] != nextbb:
+            res += ("\tb %s\n" % self.tgt[1])
+        return res
     def __str__(self):
         if not self.src.is_nil :
-            res = self.brname[self.op]+" "+str(self.src)+", "+self.tgt
+            res = "br %s %s, [ %s, %s ]" % (self.brname[self.op], self.src, self.tgt[0], self.tgt[1])
         else :
-            res = self.brname[self.op]+" "+self.tgt
+            res = "br %s [ %s ]" % (self.brname[self.op], self.tgt[0])
         res += gen_rvmap(self.src)
         return res
 
@@ -420,10 +405,6 @@ class Phi:
         self.is_phi = True
         self.is_br = False
         self.dst = get_operand(dst, True)
-    def mark_as_used(self):
-        self.dst.mark_as_used()
-    def mark_as_unused(self):
-        self.dst.mark_as_unused()
     @property
     def used(self):
         return self.dst.used
@@ -438,7 +419,6 @@ class Phi:
     def validate(self, bb, bbmap):
         for src, var in self.srcs.items():
             #does src point to us?
-            assert src in bb.predecessors
             print("{0} does point to us".format(src))
             #are we referring to ourselves?
             #assert not var == self.dst, "Phi %s -> %s" % (var, self.dst)
@@ -446,14 +426,14 @@ class Phi:
             _dfn = bbmap[src].internal_dfn|bbmap[src].avail_dfn
             var.validate(_dfn)
             print("{0} is defined in {1}".format(var, src))
-        for pred in bb.predecessors:
+        for pred in bb.preds:
             assert pred in self.srcs
+        assert len(bb.preds) == len(self.srcs)
     def __str__(self):
-        res = "PHI "+str(self.dst)+", ["
+        res = "%s = phi " % self.dst
         for x, y in self.srcs.items():
-            res += x+" : "+str(y)+", "
-        res += "]"
-        return res
+            res += "[ %s: %s ], " % (x, y)
+        return res[:-2]
 
 def load_or_move(src, dst):
     assert dst.is_reg
@@ -484,7 +464,7 @@ class Load(NIns):
         self.is_phi = False
         self.is_br = False
     def __str__(self):
-        return "load %s, %s" % (str(self.dst), str(self.m))
+        return "%s = load %s" % (str(self.dst), str(self.m))
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
     def get_used(self):
@@ -514,11 +494,10 @@ class Ret:
         self.used = True
         self.is_br = True
         self.is_phi = False
-        self.is_cond = False
-        self.tgt = None
+        self.tgt = [None, None]
     def allocate(self, _):
         return
-    def gencode(self):
+    def gencode(self, nextbb):
         return "\tjr $ra\n"
     def validate(self, _):
         return True
@@ -537,21 +516,16 @@ class BB:
     def __str__(self):
         res = self.name+":\n"
         res += "#availbb: "+str(self.availbb)+"\n"
-        res += "#pred: "+str(self.predecessors)+"\n"
-        res += "#succ: "+str(self.successors)+"\n"
-        res += "#fall through: "+str(self.fall_through)+"\n"
+        res += "#pred: "+str(self.preds)+"\n"
+        res += "#succ: "+str(self.succs)+"\n"
         res += "#In: "+_str_set(self.In)+"\n"
         if self.required:
             res += "#Required: "+str(self.required)+"\n"
-        for n, i in enumerate(self.ins):
-            if i is self.br:
-                break
-            res += "\t"+str(i)
-            if not i.used:
-                res += "  #unused"
-            res += "\n"
-        if self.br:
-            res += "\t"+str(self.br)+"  #end\n"
+        for i in self.phis:
+            res += "\t"+str(i)+"\n"
+        for i in self.ins:
+            res += "\t"+str(i)+"\n"
+        res += "\t"+str(self.br)+"  #end\n"
         res += "#Out: "+_str_set(self.out)+"\n"
         if self.out_reg:
             res += "#Out_reg: \n"
@@ -559,55 +533,53 @@ class BB:
                 res += str(k)+": "+str(v)+", "
             res += "\n"
         return res
-    def gencode(self):
+    def gencode(self, nextbb):
         res = self.name+":\n"
+        assert not self.phis
         for i in self.ins:
             res += i.gencode()
+        res += self.br.gencode(nextbb)
         return res
     def __hash__(self):
         return self.name.__hash__()
     def __eq__(self, other):
         return self is other
-    def __init__(self, name, ins=[]):
+    def __init__(self, name, bb=None):
         #dfn is variable defined in all paths lead to this bb
         self.ins = []
+        self.phis = []
         self.name = name
-        self.allocated = False #is register allocation done
         self.avail_done = False
         self.inout_done = False
-        self.end = False
         self.br = None
-        self.nxt = None
-        self.phi = []
-        self._phi = True
         self.in_dfn = set() #in_dfn = definitions in this bb
         self.a_dfn = set() #available definitions
         self.in_used = set()
-        self.predecessors = set()
-        self.successors = set()
+        self.succs = [] #next[0] = branch taken, next[1] = otherwise
+        self.preds = []
         self.validated = False
         self.availbb = set()
-        self.availbb_next = set()
-        self.fall_through = True
         self.out = set()
         self.In = set()
         self.out_reg = {}
         self.required = set()
         self.dombb = set()
-        if ins:
-            self += ins
+        if bb:
+            self += bb.phis
+            self += bb.ins
+            self += [bb.br]
 
     def avail_next(self, bbmap, queue):
-        availbb_next = set()
-        for pbb in self.predecessors:
-            if not availbb_next:
-                availbb_next = bbmap[pbb].availbb|{pbb}
-            else :
-                availbb_next &= (bbmap[pbb].availbb|{pbb})
+        if not self.preds:
+            availbb_next = set()
+        else :
+            pabb = [bbmap[pbb].availbb|{pbb} for pbb in self.preds]
+            availbb_next = reduce(lambda x, y: x&y, pabb)
         if availbb_next != self.availbb:
-            for nbb in self.successors:
-                queue |= {nbb}
-            self.availbb = availbb_next
+            for nbb in self.succs:
+                if nbb:
+                    queue |= {nbb}
+            self.availbb = set(availbb_next)
 
     def avail_finish(self, bbmap):
         self.avail_done = True
@@ -620,30 +592,21 @@ class BB:
     def internal_used(self):
         if self.in_used:
             return self.in_used
-        for i in self.ins:
-            if not i.is_phi:
-                self.in_used |= i.get_used()
+        for i in self.ins+[self.br]:
+            self.in_used |= i.get_used()
         return self.in_used
 
     def inout_next(self, bbmap, queue):
         self.In = (self.out|self.internal_used)-self.internal_dfn
         visited = set()
-        for i in self.ins:
-            if not i.is_phi:
-                break
-            for srcbb, src in i.srcs.items():
-                srcu = src.get_used()
-                sbb = bbmap[srcbb]
-                new_out = sbb.out
-                visited |= {sbb.name}
-                if new_out|self.In|srcu != sbb.out:
-                    sbb.out |= (self.In|srcu)
-                    queue |= {srcbb}
-
-        for prevbb in self.predecessors-visited:
-            pbb = bbmap[prevbb]
-            if pbb.out|self.In != pbb.out:
-                pbb.out |= self.In
+        for prevbb in self.preds:
+            sbb = bbmap[prevbb]
+            new_out = sbb.out|self.In
+            for i in self.phis:
+                srcu = i.srcs[prevbb].get_used()
+                new_out |= srcu
+            if new_out != sbb.out:
+                sbb.out = new_out
                 queue |= {prevbb}
 
     def inout_finish(self, bbmap):
@@ -654,35 +617,22 @@ class BB:
                 self.required |= {abb}
 
     def __iadd__(self, _ins):
-        if self.end :
-            #print(self)
-            raise Exception("Appending instruction after end of BB")
-        if self.availbb :
-            raise Exception("Appending instruction after calc availbb")
         ins = copy.copy(_ins)
         while ins:
+            if self.br:
+                raise Exception("Appending instruction after end of BB")
             i = ins.pop(0)
-            if i.is_phi and not self._phi:
-                raise Exception("Phi instructions in the middle of a BB")
-            if not i.is_phi and self._phi:
-                self._phi = False
-                self.phi = self.ins[0:]
-            if i.is_br:
-                if ins:
-                    raise Exception("Branch not at end of BB.")
-                self.end = True
-                self.br = i
-                self.nxt = i.tgt
-                self.fall_through = i.is_cond
-            self.ins.append(i)
+            if i.is_phi:
+                if self.ins:
+                    raise Exception("Phi instructions in the middle of a BB")
+                self.phis.append(i)
+            else :
+                if i.is_br:
+                    self.br = i
+                    self.succs = i.tgt
+                else :
+                    self.ins.append(i)
         return self
-    @property
-    def nonbr_ins(self):
-        if not self.ins:
-            return []
-        if self.ins[-1].is_br:
-            return self.ins[0:-1]
-        return self.ins
     @property
     def avail_dfn(self):
         if not self.avail_done:
@@ -692,13 +642,11 @@ class BB:
     def internal_dfn(self):
         if self.in_dfn:
             return self.in_dfn
-        for i in self.ins:
+        for i in self.phis+self.ins:
             self.in_dfn |= i.get_dfn()
         return self.in_dfn
     def finish(self):
-        if self._phi:
-            self.phi = self.ins[0:]
-        self.end = True
+        assert self.br
     def validate(self, bbmap):
         #with the help of available dfn
         #we can make sure all of the variables used in this bb
@@ -707,43 +655,22 @@ class BB:
         _dfn = copy.copy(self.a_dfn)
         #skip phi instructions, only get their defines
         #because phi instruction can grab a variable defined later in this bb
-        for i in self.ins:
-            if i.is_phi:
-                _dfn |= i.get_dfn()
-            else :
-                break
+        for i in self.phis:
+            i.validate(self, bbmap)
+            _dfn |= i.get_dfn()
         #validate other instructions
         for i in self.ins:
-            if not i.is_phi:
-                i.validate(_dfn)
-                _dfn |= i.get_dfn()
-        #now validate phi instructions
-        for i in self.ins:
-            if i.is_phi:
-                i.validate(self, bbmap)
+            i.validate(_dfn)
+            _dfn |= i.get_dfn()
     def liveness(self):
         alive = set(self.out)
-        for i in reversed(self.ins):
-            if i.is_phi:
-                break
+        for i in reversed(self.ins+[self.br]):
             u = i.get_used()
             i.last_use = set()
             for v in u:
                 if v not in alive:
                     i.last_use |= {v}
                     alive |= {v}
-            ds = i.get_dfn()
-            if ds:
-                d, = ds
-                if d in alive:
-                    i.mark_as_used()
-                    alive -= {d}
-        for i in self.ins:
-            if not i.is_phi:
-                continue
-            d, = i.get_dfn()
-            if d in alive:
-                i.mark_as_used()
 
     def assign_out_reg(self, R):
         for v in self.out:
@@ -757,8 +684,11 @@ class IR:
             res += str(bb)
         return res
 
-    def __init__(self, bb=[]):
-        self.bb = copy.copy(bb)
+    def __init__(self, bb=None):
+        if bb:
+            self.bb = copy.copy(bb)
+        else :
+            self.bb = []
         self.bbmap = {}
         self.bbcnt = 0
 
@@ -779,16 +709,12 @@ class IR:
         return r
 
     def calc_connections(self):
-        prev = None
         for i in self.bb:
-            if prev and prev.fall_through:
-                i.predecessors |= {prev.name}
-                prev.successors |= {i.name}
-            if i.nxt :
-                assert i.nxt in self.bbmap, "Jumping to a non-existent block %s" % i.nxt
-                i.successors |= {i.nxt}
-                self.bbmap[i.nxt].predecessors |= {i.name}
-            prev = i
+            for succ in i.succs:
+                if not succ:
+                    continue
+                assert succ in self.bbmap, "Jumping to a non-existent block %s" % succ
+                self.bbmap[succ].preds.append(i.name)
 
     def calc_avail(self):
         #calculate blocks that are 'available' to this bb
@@ -821,8 +747,12 @@ class IR:
         f = open(fname, 'w')
         f.write(".data\nnl: .asciiz \"\\n\"\n")
         f.write(".text\nmain:\n")
-        for bb in self.bb:
-            f.write(bb.gencode())
+        numbb = len(self.bb)
+        for n, bb in enumerate(self.bb):
+            nextbb = None
+            if n+1 < numbb:
+                nextbb = self.bb[n+1].name
+            f.write(bb.gencode(nextbb))
         f.close()
     def finish(self):
         print(self)

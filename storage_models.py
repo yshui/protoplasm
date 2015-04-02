@@ -13,15 +13,24 @@ class Registers:
         elif other.is_var:
             return other in self.vrmap
         return False
+    def demote(self, var, m):
+        assert m.is_mem
+        self.drop(var)
+        if var not in self.M:
+            self.M.reserve(var, m)
     def reserve(self, var, reg):
-        assert reg.is_reg
-        assert reg not in self.rvmap
-        assert reg in self.avail_reg
-        var = Var(var.val)
-        self.vrmap[var] = reg
-        reg = Register(reg.val)
-        self.rvmap[reg] = var
-        self.avail_reg -= {reg}
+        if reg.is_reg:
+            assert reg not in self.rvmap
+            assert reg in self.avail_reg
+            var = Var(var.val)
+            self.vrmap[var] = reg
+            reg = Register(reg.val)
+            self.rvmap[reg] = var
+            self.avail_reg -= {reg}
+        else :
+            assert reg.is_mem
+            assert var not in self.M
+            self.M.reserve(var, reg)
     def get(self, var):
         if var in self.vrmap:
             reg = self.vrmap[var]
@@ -38,6 +47,7 @@ class Registers:
         reg = self.vrmap[var]
         del self.vrmap[var]
         self.avail_reg |= {reg}
+        assert reg in self.rvmap, reg
         del self.rvmap[reg]
     def drop(self, o):
         if o.is_var:
@@ -54,6 +64,8 @@ class Registers:
         var = o
         if o.is_reg:
             var = self.rvmap[o]
+        elif o.is_mem:
+            var = self.M.mvmap[o]
         assert var.is_var, o
         self.drop(var)
         self.M.drop(var)
@@ -88,7 +100,7 @@ class Registers:
         if var not in self.M:
             #if it is not in vrmap before, and it is not in memory either
             #must be a newly defined dst
-            assert var.dst
+            assert var.dst, var
             print("Prmoted %s from nothing to %s" % (var, reg))
         else :
             print("Promoted %s from %s to %s" % (var, self.M.vmmap[var], reg))

@@ -1,6 +1,6 @@
 from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, Load, Store, Br, Register, all_reg
 from collections import deque
-from utils import _set_print, _dict_print
+from utils import _set_print, _dict_print, link, get_father
 from storage_models import Memory, Registers
 import copy
 def _phi_get_used(i):
@@ -59,127 +59,37 @@ def prune_unused(ir):
     nir.finish()
     return (True, nir)
 
-def empty_block_removal(ir):
-    jmap = {}
-    stack = []
-    nir = IR()
-    changed = False
-    print("=============Remove empty blocks===================")
-    for bb in ir.bb:
-        assert not bb.phi, "Can perform block removal when bb has phinodes"
-        if not bb.ins:
-            #empty block
-            print("Empty block %s" % bb.name)
-            stack.append(bb)
-            changed = True
-        else :
-            while stack:
-                ebb = stack.pop()
-                jmap[ebb.name] = bb.name
-    for bb in ir.bb:
-        if not bb.ins:
-            continue
-        if not bb.br or bb.br.tgt not in jmap:
-            nxbb = BB(bb.name, bb.ins)
-            nir += [nxbb]
-            continue
-        nbb = BB(bb.name)
-        nbb += bb.nonbr_ins
-        nbr = copy.copy(bb.br)
-        if nbr.tgt:
-            nbr.tgt = jmap[nbr.tgt]
-        nbb += [nbr]
-        nir += [nbb]
-    print(nir)
-    nir.finish()
-    return (changed, nir)
-
 def jump_block_removal(ir):
-    nextbb = {}
-    prevbb = {}
-    prev = None
-    nextbb[1] = ir.bb[0].name
-    prevbb[ir.bb[0].name] = 1
-    for bb in ir.bb:
-        if prev:
-            if prev.fall_through:
-                nextbb[prev.name] = bb.name
-                prevbb[bb.name] = prev.name
-            else :
-                nextbb[prev.name] = None
-                prevbb[bb.name] = None
-        prev = bb
-    nextbb[prev.name] = None
     jmap = {}
-    removed = set()
     changed = False
     for bb in ir.bb:
-        if bb.nonbr_ins:
+        jmap[bb.name] = bb.name
+    for bb in ir.bb:
+        assert not bb.phis, "Can't do jump block removal on bb with phi nodes"
+        if bb.ins or bb.br.tgt[1]:
             continue
-        if not bb.br:
-            continue
-        if bb.br.is_cond:
-            continue
-        nbb = bb.nxt
-        if not nbb:
-            continue
-        while nbb in jmap:
-            nbb = jmap[nbb]
-        final = nbb
-        nbb = bb.nxt
-        while nbb in jmap:
-            tmp = jmap[nbb]
-            jmap[nbb] = final
-            nbb = tmp
-        nbb = final
-        if prevbb[bb.name] and prevbb[nbb]:
+        if not bb.br.tgt[0]:
             continue
         changed = True
-        removed |= {bb.name}
-        print("Redirect %s to %s" % (bb.name, nbb))
-        jmap[bb.name] = nbb
-        if prevbb[bb.name] and not prevbb[nbb]:
-            #nbb don't have fallthrough
-            #change nextbb pointer
-            print("%s now fall through to %s, %s" % (prevbb[bb.name], nbb, bb.name))
-            nextbb[prevbb[bb.name]] = nbb
-            prevbb[nbb] = prevbb[bb.name]
-    print(removed)
+        print("Link %s -> %s" % (bb.name, bb.br.tgt[0]))
+        link(bb.br.tgt[0], bb.name, jmap)
+    if not changed:
+        return (False, ir)
     nir = IR()
-    nbbmap = {}
     for bb in ir.bb:
-        if bb.name in removed:
+        rdir = get_father(bb.name, jmap)
+        if rdir != bb.name:
             continue
-        newbb = BB(bb.name)
-        newbb += bb.nonbr_ins
-        ni = copy.copy(bb.br)
-        if ni :
-            nbb = ni.tgt
-            while nbb in jmap:
-                nbb = jmap[nbb]
-            final = nbb
-            nbb = ni.tgt
-            while nbb in jmap:
-                tmp = jmap[nbb]
-                jmap[nbb] = final
-                nbb = tmp
-            nbb = final
-            ni.tgt = final
-            newbb += [ni]
-        nbbmap[bb.name] = newbb
-    bbb = set([x for x in prevbb if not prevbb[x] and x not in removed])
-    now = nextbb[1]
-    print(nextbb)
-    while True:
-        nir += [nbbmap[now]]
-        now = nextbb[now]
-        if not now:
-            if bbb:
-                now = bbb.pop()
-            else :
-                break
+        nbb = BB(bb.name, bb)
+        for x in range(0, 2):
+            oldtgt = nbb.br.tgt[x]
+            if not oldtgt:
+                continue
+            nbb.br.tgt[x] = get_father(oldtgt, jmap)
+            print("Redirect %s to %s" % (oldtgt, nbb.br.tgt[x]))
+        nir += [nbb]
     nir.finish()
-    return (changed, nir)
+    return (True, nir)
 
 def block_coalesce(ir):
     removed = set()
@@ -207,14 +117,14 @@ def block_coalesce(ir):
         nbbmap[bb.name] = nxbb
         if bb.name in removed:
             continue
-        if len(bb.successors) != 1:
+        if len(bb.succs) != 1:
             continue
-        succ, = bb.successors
+        succ, = bb.succs
         succ = ir.bbmap[succ]
-        if len(succ.predecessors) > 1:
+        if len(succ.preds) > 1:
             continue
-        assert bb.name in succ.predecessors
-        if succ.phi:
+        #assert bb.name in set(succ.preds)
+        if succ.phis:
             continue
         nbb = BB(bb.name)
         nbb += bb.nonbr_ins
@@ -243,35 +153,36 @@ def chain_breaker(ir):
     changed = False
     for bb in ir.bb:
         print("======%s======" % bb.name)
-        nxbb = BB(bb.name, bb.ins)
-        if not bb.In and not bb.phi:
+        nxbb = BB(bb.name, bb)
+        if not bb.In and not bb.phis:
             print("No phi, no in, continue")
             nir += [nxbb]
             continue
         nbb = BB(bb.name)
         #add phi nodes
         varmap = {}
-        if len(bb.predecessors) > 1:
+        if len(bb.preds) > 1:
             #create phi node to grab the replaced
             #variable from different preds
             print("Generate additional phi")
+            nphi = []
             for v in bb.In:
                 assert v.is_var
                 changed = True
-                nphi = Phi(str(v)+"."+bb.name)
-                for p in bb.predecessors:
+                ni = Phi(str(v)+"."+bb.name)
+                for p in bb.preds:
                     pp = ir.bbmap[p]
                     if v in pp.In:
-                        nphi.set_source(p, str(v)+"."+p)
+                        ni.set_source(p, str(v)+"."+p)
                     else :
-                        nphi.set_source(p, str(v))
-                print(nphi)
-                nbb += [nphi]
+                        ni.set_source(p, str(v))
+                nphi.append(ni)
                 varmap[v] = Var(v.val+"."+bb.name)
             print("Rewrite original phi")
-            for phi in bb.phi:
-                print("%s: %s" % (bb.name, phi))
-                for srcbb, v in phi.srcs.items():
+            for i in bb.phis:
+                print("%s: %s" % (bb.name, i))
+                ni = copy.copy(i)
+                for srcbb, v in ni.srcs.items():
                     if v.is_imm:
                         continue
                     sbb = ir.bbmap[srcbb]
@@ -279,18 +190,15 @@ def chain_breaker(ir):
                     if v in sbb.In:
                         changed = True
                         print("%s in %s's In, change name to %s" % (v, srcbb, str(v)+"."+srcbb))
-                        phi.set_source(srcbb, str(v)+"."+srcbb)
+                        ni.set_source(srcbb, str(v)+"."+srcbb)
                     else :
                         print("%s not in %s's In" % (v, srcbb))
-                print(phi)
+                nphi.append(ni)
+            nbb += nphi
         else :
             #only one pred, but now the in variables might have changed
             print("Single pred, rewrite var name")
-            if not bb.predecessors:
-                print(bb.In)
-                print(bb.phi)
-                print(not bb.In and not bb.phi)
-            pred, = bb.predecessors
+            pred, = bb.preds
             pred = ir.bbmap[pred]
             varmap = {}
             for v in bb.In:
@@ -299,14 +207,14 @@ def chain_breaker(ir):
                     varmap[v] = Var(v.val+"."+pred.name)
         if varmap:
             changed = True
-        for i in bb.nonbr_ins:
+        for i in bb.ins:
             ni = copy.copy(i)
             ni.allocate(varmap)
             nbb += [ni]
         passthrou = bb.In&bb.out
-        if len(bb.predecessors) == 1 and passthrou:
+        if len(bb.preds) == 1 and passthrou:
             changed = True
-            pred, = bb.predecessors
+            pred, = bb.preds
             pred = ir.bbmap[pred]
             for v in passthrou:
                 vname = str(v)
@@ -321,7 +229,7 @@ def chain_breaker(ir):
     nir.finish()
     print(nir)
     for bb in nir.bb:
-        assert not bb.In or len(bb.predecessors) == 1
+        assert not bb.In or len(bb.preds) == 1
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
     return (changed, nir)
 
@@ -330,16 +238,14 @@ def allocate_bb(bb, bbmap):
     ret = {}
     M = Memory()
     R = Registers(M)
-    mem_phi = set()
     prmap = {}
     print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
-    if len(bb.predecessors)==1:
-        assert not bb.phi
-        only_pred, = bb.predecessors
+    if len(bb.preds) == 1:
+        assert not bb.phis
+        only_pred, = bb.preds
         only_pred = bbmap[only_pred]
         for v in bb.In:
-            #we assume chain_breaker has been run
-            assert v in only_pred.out_reg
+            assert v in only_pred.out_reg, str(bb)+str(only_pred)
             vreg = only_pred.out_reg[v]
             ret[v] = deque([])
             if vreg.is_reg:
@@ -349,9 +255,8 @@ def allocate_bb(bb, bbmap):
     else :
         M2 = Memory()
         R2 = Registers()
-        mem = set()
-        for phi in bb.phi:
-            for phibb, v in phi.srcs.items():
+        for i in bb.phis:
+            for phibb, v in i.srcs.items():
                 pbb = bbmap[phibb]
                 if v not in pbb.out_reg:
                     continue
@@ -364,10 +269,10 @@ def allocate_bb(bb, bbmap):
                         R2.reserve(v, sreg)
         #register preference:
         #same reg as src > same memory as src > reg different from src > other memory
-        for phi in bb.phi:
+        for i in bb.phis:
             print(M)
             reg = None #reg in srcs not used
-            for phibb, v in phi.srcs.items():
+            for phibb, v in i.srcs.items():
                 pbb = bbmap[phibb]
                 if v not in pbb.out_reg:
                     #the pbb is not allocated yet
@@ -375,39 +280,39 @@ def allocate_bb(bb, bbmap):
                 srcreg = pbb.out_reg[v]
                 if srcreg.is_reg:
                     if srcreg not in R:
-                        R.reserve(phi.dst, srcreg)
+                        R.reserve(i.dst, srcreg)
                         reg = srcreg
                         break
                 else :
                     if srcreg not in M:
                         #this memory is not used by any phi yet
-                        M.reserve(phi.dst, srcreg)
+                        M.reserve(i.dst, srcreg)
                         reg = srcreg
                         break
             if not reg:
                 #try to avoid registers used by other src
                 #(so other phis will be able to use them)
-                reg = R2.get(phi.dst)
+                reg = R2.get(i.dst)
                 if reg:
-                    R.reserve(phi.dst, reg)
+                    R.reserve(i.dst, reg)
             if not reg:
-                reg = R.get(phi.dst)
+                reg = R.get(i.dst)
             if not reg:
                 #avoid using same memory as src so
                 #other phis will be able to use them
                 #     v----- change to M to test phi block gen
-                e, reg = M2.get(phi.dst)
+                e, reg = M2.get(i.dst)
                 assert not e
-                M.reserve(phi.dst, reg)
-            print("Phi allocation: %s -> %s" % (reg, phi.dst))
-            ret[phi.dst] = deque([reg])
-            prmap[phi.dst] = reg
+                M.reserve(i.dst, reg)
+            print("Phi allocation: %s -> %s" % (reg, i.dst))
+            ret[i.dst] = deque([reg])
+            prmap[i.dst] = reg
     #phi allocation ends here
     print(M)
     _dict_print(R.vrmap)
     _dict_print(M.vmmap)
     _set_print(bb.In)
-    for i in bb.ins:
+    for i in bb.ins+[bb.br]:
         if i.is_phi:
             continue
         print(i)
@@ -448,76 +353,72 @@ def allocate_bb(bb, bbmap):
             if s:
                 ret[s].append(sm)
     bb.assign_out_reg(R)
+    print("OUT REG!!!")
     _dict_print(bb.out_reg)
     return (ret, prmap)
 
-def promote_replay_half(v, rvmap, vrmap, allocation):
+def promote_replay(v, R, allocation):
     #promote v into reg, do store/load if necessary
     #but don't change vrmap besides for v
-    if v in vrmap and vrmap[v].is_reg:
-        return (None, None, [])
+    if v in R:
+        return []
     ret = []
     assert v in allocation, str(v)
     r = allocation[v].popleft()
     assert r.is_reg
     oldv = None
     m = None
-    if r in rvmap:
-        oldv = rvmap[r]
+    if r in R:
+        oldv = R.rvmap[r]
         #empty allocation means it's not longer needed
         e, m = allocation[oldv].popleft()
-        print("Store %s(%s) -> %s, for %s" % (oldv, vrmap[oldv], m, v))
+        print("Store %s(%s) -> %s, for %s" % (oldv, R.vrmap[oldv], m, v))
+        assert m, v
         assert m.is_mem
         if not e:
             ret += [Store(m, r)]
-    if v in vrmap:
-        ret += [Load(r, vrmap[v])]
-        print("Load %s(%s) -> %s" % (v, vrmap[v], r))
-    vrmap[v] = r
-    _dict_print(vrmap)
-    rvmap[r] = v
-    return (oldv, m, ret)
-
-
-def promote_replay(v, rvmap, vrmap, allocation):
-    oldv, m, ins = promote_replay_half(v, rvmap, vrmap, allocation)
-    if oldv:
-        vrmap[oldv] = m
-    return ins
+        R.demote(oldv, m)
+    if v in R.M:
+        m = R.M.vmmap[v]
+        ret += [Load(r, m)]
+        print("Load %s(%s) -> %s" % (v, m, r))
+    R.reserve(v, r)
+    _dict_print(R.vrmap)
+    return ret
 
 def allocate(ir):
-    total_pred = {}
-    total_avail = {}
-    allocated_pred = {}
-    allocated_avail = {}
+    unallocated_pred = {}
+    todo = set()
+    mentry = set()
     allocation = {}
     prmaps = {}
     for bb in ir.bb:
-        total_pred[bb.name] = len(bb.predecessors)
-        total_avail[bb.name] = len(bb.availbb)
-        allocated_pred[bb.name] = 0
-        allocated_avail[bb.name] = 0
+        if len(bb.preds) > 1:
+            mentry |= {bb}
+        todo |= {bb}
+        unallocated_pred[bb] = len(bb.preds)
 
-    queue = set([bb for bb in ir.bb if total_pred[bb.name] == 0])
-    queue2 = set([bb for bb in ir.bb if total_avail[bb.name] == 0])
-    queue2 -= queue
-    while queue:
+    queue = set([bb for bb in todo if unallocated_pred[bb] == 0])
+    while todo:
         h = queue.pop()
-        queue2 -= {h}
+        todo -= {h}
+        mentry -= {h}
         #allocate bb
         allocation[h], prmaps[h] = allocate_bb(h, ir.bbmap)
-        for nbb in h.successors:
-            allocated_pred[nbb] += 1
-            if allocated_pred[nbb] == total_pred[nbb] and nbb not in allocation:
-                queue |= {ir.bbmap[nbb]}
-        for dbb in h.dombb:
-            allocated_avail[dbb] += 1
-            if allocated_avail[dbb] == total_avail[dbb] and dbb not in allocation:
-                queue2 |= {ir.bbmap[dbb]}
-        if not queue:
-            #queue empty, add all bb whose availbb is allocated
-            queue = queue2
-            queue2 = set()
+        for nbb in h.succs:
+            if not nbb:
+                continue
+            nbb = ir.bbmap[nbb]
+            print("%s-=1" % nbb.name)
+            unallocated_pred[nbb] -= 1
+            if unallocated_pred[nbb] <= 0 and nbb in todo:
+                queue |= {nbb}
+        if not queue and todo:
+            #queue empty, find the bb with the least unallocated pred
+            candidate = min(mentry, key=unallocated_pred.get)
+            print("%s!_!->%s" % (candidate.name, unallocated_pred[candidate]))
+            queue = {candidate}
+
     for bb in allocation:
         print("<=====%s=====>" % bb.name)
         res = ""
@@ -536,76 +437,62 @@ def allocate(ir):
         #generate new ir with registers
         #phi nodes is generated by its predecessors
         print("!!!!!!!!%s!!!!!!!!" % bb.name)
-        vrmap = {}
-        rvmap = {}
+        R = Registers(Memory())
         pred = None
         nbb = BB(bb.name)
         bballoc = allocation[bb]
-        if len(bb.predecessors) == 1:
-            pred, = bb.predecessors
+        if len(bb.preds) == 1:
+            pred, = bb.preds
             pred = ir.bbmap[pred]
             for v in bb.In:
-                assert v in pred.out_reg
-                vrmap[v] = pred.out_reg[v]
-                if vrmap[v].is_reg:
-                    rvmap[vrmap[v]] = v
+                R.reserve(v, pred.out_reg[v])
         else :
-            for i in bb.phi:
+            for i in bb.phis:
                 v = i.dst
-                vrmap[v] = bballoc[v].popleft()
-                if vrmap[v].is_reg:
-                    rvmap[vrmap[v]] = v
-        for i in bb.ins:
-            if i.is_phi:
-                continue
+                reg = bballoc[v].popleft()
+                R.reserve(v, reg)
+        for i in bb.ins+[bb.br]:
             ni = copy.copy(i)
             u = ni.get_used()
             for v in u:
-                nbb += promote_replay(v, rvmap, vrmap, allocation[bb])
+                nbb += promote_replay(v, R, allocation[bb])
+            vrmap2 = {}
             for v in i.last_use:
                 assert v not in allocation or not allocation[v]
                 print("Last use: %s" % v)
-                del rvmap[vrmap[v]]
+                vrmap2[v] = R.vrmap[v] #save the allocation
+                R.drop_both(v)
             ds = i.get_dfn()
-            d = None
-            oldv = None
-            m = None
+            d, oldv, m = None, None, None
             if ds:
                 d, = ds
-                oldv, m, ins = promote_replay_half(d, rvmap, vrmap, allocation[bb])
-                if oldv:
-                    print("...but delay vrmap change")
-                nbb += ins
-            ni.allocate(vrmap)
-            if oldv:
-                vrmap[oldv] = m
-            for v in i.last_use:
-                del vrmap[v]
-            if ni.is_br and ni.tgt:
+                nbb += promote_replay(d, R, allocation[bb])
+            for v in vrmap2:
+                R.vrmap[v] = vrmap2[v]
+            ni.allocate(R.vrmap)
+            for v in vrmap2:
+                del R.vrmap[v]
+            if ni.is_br:
                 #if the branch instruction has a target
                 #change the target to point to the phi block
-                print(ni)
-                ni.tgt = bb.name+"_"+ni.tgt
+                ni.tgt = list(ni.tgt) #copy the target list
+                for i in range(0, 2):
+                    if ni.tgt[i]:
+                        ni.tgt[i] = bb.name+"_"+ni.tgt[i]
             nbb += [ni]
         nir += [nbb]
 
-        if not bb.successors:
+        if not bb.succs:
             continue
-        phibb = [None, None]
-        assert len(bb.successors) <= 2
-        for succ in bb.successors:
+        assert len(bb.succs) <= 2
+        for succ in bb.succs:
+            if not succ:
+                continue
             sbb = ir.bbmap[succ]
             nbb = gen_phi_block(bb, sbb, prmaps[sbb])
             #fallthrough should be put right after
-            if not bb.br or not bb.fall_through:
-                phibb = [nbb]
-            elif succ == bb.br.tgt:
-                phibb[1] = nbb
-            else :
-                phibb[0] = nbb
+            nir += [nbb]
         print(bb.name)
-        print(phibb)
-        nir += phibb
     nir.finish()
     return (True, nir)
 
@@ -617,7 +504,7 @@ def gen_phi_block(bb, sbb, prmap):
     src_mem = {} #any memory cell holds src
     src_rcv = {} #all the phis for a src
     dsmap = {} #map from a conflict entry to the corresponding src
-    a_mem = set(range(0, 4*len(sbb.phi))) #which memory cell is free? used for finding temp memory cell
+    a_mem = set(range(0, 4*len(sbb.phis))) #which memory cell is free? used for finding temp memory cell
     def valid_move(src, dst):
         nonlocal src_reg, src_mem, prmap, dsmap
         dreg = prmap[dst]
@@ -686,7 +573,7 @@ def gen_phi_block(bb, sbb, prmap):
 
     nosrcreg = set(all_reg)
     #preprocessing, filling in the needed maps
-    for i in sbb.phi:
+    for i in sbb.phis:
         dst = i.dst
         dreg = prmap[dst]
         src = i.srcs[bb.name]
@@ -718,7 +605,7 @@ def gen_phi_block(bb, sbb, prmap):
             continue
 
     #calculate free registers
-    phiregs = set([prmap[i.dst] for i in sbb.phi if prmap[i.dst].is_reg])
+    phiregs = set([prmap[i.dst] for i in sbb.phis if prmap[i.dst].is_reg])
     nophiregs = set(all_reg)-phiregs
     todo = set([x for x in src_rcv if src_rcv[x]])
 
@@ -727,7 +614,7 @@ def gen_phi_block(bb, sbb, prmap):
     s0ins = []
     immmap = {}
     tmpreg = False
-    for i in sbb.phi:
+    for i in sbb.phis:
         src = i.srcs[bb.name]
         if not src.is_imm:
             continue
@@ -814,7 +701,7 @@ def gen_phi_block(bb, sbb, prmap):
             break
     #while todo end
 
-    end = Br(0, None, sbb.name)
+    end = Br(0, None, sbb.name, None)
     if not todo:
         nbb += s0ins
         nbb += s1ins

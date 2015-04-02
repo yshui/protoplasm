@@ -111,9 +111,10 @@ class BinOP(Expr):
             pbb = ir.append_bb(None)
             pbbname = parse_bbname(pbb.name)
             epname = build_bbname(pbbname, 0, 0, 1)
-            bb += [Br(1, lres, epname)]
+            bb += [Br(1, lres, epname, pbb.name)]
             rres = self.ropr.get_result(varv, ir)
             bb2 = ir.last_bb
+            bb2 += [Br(0, None, epname, None)]
             bb3 = ir.append_bb(epname)
             dst = varv.next_ver(dst)
             bb3 += [Phi(dst, bb.name, 0, bb2.name, rres)]
@@ -122,9 +123,10 @@ class BinOP(Expr):
             pbb = ir.append_bb(None)
             pbbname = parse_bbname(pbb.name)
             epname = build_bbname(pbbname, 0, 0, 1)
-            bb += [Br(2, lres, epname)]
+            bb += [Br(2, lres, epname, pbb.name)]
             rres = self.ropr.get_result(varv, ir)
             bb2 = ir.last_bb
+            bb2 += [Br(0, None, epname, None)]
             bb3 = ir.append_bb(epname)
             dst = varv.next_ver(dst)
             bb3 += [Phi(dst, bb.name, lres, bb2.name, rres)]
@@ -262,7 +264,6 @@ class If:
             res += '}'
         return res
     def emit(self, varv, ir):
-        num = str(ir.bbcnt)
         tdfn = self.then.get_defined()
         pdfn = varv.get_dfn()
         edfn = set()
@@ -271,19 +272,22 @@ class If:
 
         prologue = ir.last_bb
         pbbname = parse_bbname(prologue.name)
+        tbbname = build_bbname(pbbname, 0, 1, 0)
+        epname = build_bbname(pbbname, 0, 0, 1)
+        ebbname = build_bbname(pbbname, 1, 0, 0)
         res = self.cond.get_result(varv, ir)
         if self.e :
-            prologue += [Br(1, res, build_bbname(pbbname, 1, 0, 0))]
+            prologue += [Br(1, res, ebbname, tbbname)]
         else :
-            prologue += [Br(1, res, build_bbname(pbbname, 0, 0, 1))]
+            prologue += [Br(1, res, epname, tbbname)]
         pmap = {}
         for v in (tdfn|edfn)&pdfn:
             pmap[v] = varv.curr_ver(v)
 
-        thenb = ir.append_bb(build_bbname(pbbname, 0, 1, 0))
+        thenb = ir.append_bb(tbbname)
         self.then.emit(varv, ir)
         thenb = ir.last_bb
-        thenb += [Br(0, None, build_bbname(pbbname, 0, 0, 1))]
+        thenb += [Br(0, None, epname, None)]
         #get last version
         thenmap = {}
         for v in tdfn:
@@ -291,13 +295,14 @@ class If:
 
         elsemap = {}
         if self.e :
-            elseb = ir.append_bb(build_bbname(pbbname, 1, 0, 0))
+            elseb = ir.append_bb(ebbname)
             self.e.emit(varv, ir)
             elseb = ir.last_bb
+            elseb += [Br(0, None, epname, None)]
             for v in edfn:
                 elsemap[v] = varv.curr_ver(v)
 
-        ep = ir.append_bb(build_bbname(pbbname, 0, 0, 1))
+        ep = ir.append_bb(epname)
         tgt1b = ""
         tgt2b = ""
         #Add phi nodes here
@@ -349,15 +354,16 @@ class While:
     def emit(self, varv, ir):
         prologue = ir.last_bb
         pbbname = parse_bbname(prologue.name)
+        epname = build_bbname(pbbname, 0, 0, 1)
         res = self.cond.get_result(varv, ir)
-        prologue += [Br(1, res, build_bbname(pbbname, 0, 0, 1))]
+        body = ir.append_bb(None)
+        prologue += [Br(1, res, epname, body.name)]
         dfn = self.do.get_defined()
         pdfn = varv.get_dfn()
         old_var = {}
         for v in dfn&pdfn:
             old_var[v] = varv.curr_ver(v)
 
-        body = ir.append_bb(None)
         #emit placeholder phi nodes
         #since we don't know the final
         #variable name at the end of the loop
@@ -372,13 +378,13 @@ class While:
         #replace the names in phi nodes
         body = ir.last_bb
         res2 = self.cond.get_result(varv, ir)
-        body += [Br(2, res2, bname)]
+        body += [Br(2, res2, bname, epname)]
         for phi in phis:
             v = phi.srcs[bname].val
             phi.del_source(bname)
             phi.set_source(body.name, varv.curr_ver(v))
 
-        epilogue = ir.append_bb(build_bbname(pbbname, 0, 0, 1))
+        epilogue = ir.append_bb(epname)
         #add phi nodes
         for v in dfn&pdfn:
             lv = varv.curr_ver(v)
@@ -397,7 +403,9 @@ class Block:
         for w in self.expr_list:
             w.emit(varv, ir)
         if self.is_top:
-            bb = ir.append_bb("Lend")
+            bb = ir.last_bb
+            if bb.br:
+                bb = ir.append_bb("Lend")
             bb += [Ret()]
 
     def wellformed(self, _def):
