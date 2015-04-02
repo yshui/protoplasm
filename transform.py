@@ -1,8 +1,13 @@
-from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, Load, Store, Br, Register, all_reg
+from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, IPrnt, Load, Store, Br, Register, all_reg
 from collections import deque
-from utils import _set_print, _dict_print, link, get_father
+from utils import _set_print, _dict_print, _str_dict, link, get_father
 from storage_models import Memory, Registers
 import copy
+import sys
+import logging
+
+myhdlr = logging.FileHandler(filename="nothing.log", mode = "w")
+logger = logging.getLogger()
 def _phi_get_used(i):
     u = set()
     for bb, v in i.srcs.items():
@@ -10,56 +15,69 @@ def _phi_get_used(i):
             u |= {v}
     return u
 
+def set_log_phase(n):
+    global myhdlr
+    myhdlr.close()
+    myhdlr = logging.FileHandler(filename=n+".log", mode="w")
+    logger.addHandler(myhdlr)
+
+def unset_log_phase():
+    global myhdlr
+    logger.removeHandler(myhdlr)
+
 def prune_unused(ir):
-    refcount = {}
+    set_log_phase("prune")
+    logging.info(ir)
     dfn_ins = {}
+    used = set()
     queue = set()
+    #instructions doesn't produce a result is a *real* use of its operands
     for bb in ir.bb:
-        for i in bb.ins:
-            if i.is_phi:
-                u = _phi_get_used(i)
-            else :
-                u = i.get_used()
+        for i in bb.phis+bb.ins+[bb.br]:
             ds = i.get_dfn()
+            if not ds:
+                u = i.get_used()
+                queue |= u
+                used |= u
             if ds:
                 d, = ds
                 dfn_ins[d] = i
-            for v in u:
-                if v not in refcount:
-                    refcount[v] = 0
-                refcount[v] += 1
-            if not i.used:
-                queue |= {i}
-    if not queue:
-        return (False, ir)
-    for i in queue:
-        print("Removing %s" % i)
     while queue:
-        unused = queue.pop()
-        if unused.is_phi:
-            uu = _phi_get_used(unused)
+        d = queue.pop()
+        i = dfn_ins[d]
+        if i.is_phi:
+            u = _phi_get_used(i)
         else :
-            uu = unused.get_used()
-        for v in uu:
-            refcount[v] -= 1
-            if refcount[v] <= 0:
-                dfn_ins[v].mark_as_unused()
-                queue |= {dfn_ins[v]}
+            u = i.get_used()
+        queue |= (u-used)
+        used |= u
 
     nir = IR()
+    changed = False
     for bb in ir.bb:
         nbb = BB(bb.name)
-        for i in bb.ins:
-            if not i.is_br and not i.used:
+        for i in bb.phis+bb.ins:
+            ds = i.get_dfn()
+            if not ds:
+                nbb += [i]
+                continue
+            d, = ds
+            if d not in used:
+                logging.info("%s is not used" % d)
+                changed = True
                 if isinstance(i, IInpt):
                     nbb += [IInpt(None)]
                 continue
             nbb += [i]
+        nbb += [bb.br]
         nir += [nbb]
     nir.finish()
-    return (True, nir)
+    unset_log_phase()
+    return (changed, nir)
 
 def jump_block_removal(ir):
+    set_log_phase("jbr")
+    logging.info(ir)
     jmap = {}
     changed = False
     for bb in ir.bb:
@@ -71,9 +89,10 @@ def jump_block_removal(ir):
         if not bb.br.tgt[0]:
             continue
         changed = True
-        print("Link %s -> %s" % (bb.name, bb.br.tgt[0]))
+        logging.info("Link %s -> %s" % (bb.name, bb.br.tgt[0]))
         link(bb.br.tgt[0], bb.name, jmap)
     if not changed:
+        unset_log_phase()
         return (False, ir)
     nir = IR()
     for bb in ir.bb:
@@ -86,12 +105,15 @@ def jump_block_removal(ir):
             if not oldtgt:
                 continue
             nbb.br.tgt[x] = get_father(oldtgt, jmap)
-            print("Redirect %s to %s" % (oldtgt, nbb.br.tgt[x]))
+            logging.info("Redirect %s to %s" % (oldtgt, nbb.br.tgt[x]))
         nir += [nbb]
     nir.finish()
+    unset_log_phase()
     return (True, nir)
 
 def block_coalesce(ir):
+    set_log_phase("bc")
+    logging.info(ir)
     removed = set()
     nir = IR()
     for bb in ir.bb:
@@ -112,7 +134,7 @@ def block_coalesce(ir):
             assert not succ.phis
             if len(succ.preds) != 1:
                 break
-            print("%s <-> %s is one to one, remove %s" % (succ.name, now.name, succ.name))
+            logging.info("%s <-> %s is one to one, remove %s" % (succ.name, now.name, succ.name))
             nxbb += succ.ins
             removed |= {succ.name}
             now = succ
@@ -122,17 +144,19 @@ def block_coalesce(ir):
     nir.finish()
 
     if not removed:
-        print("Block coalesce done, no changes")
-
+        logging.info("Block coalesce done, no changes")
+    unset_log_phase()
     return (bool(removed), nir)
 def chain_breaker(ir):
+    set_log_phase("chain")
+    logging.info(ir)
     nir = IR()
     changed = False
     for bb in ir.bb:
-        print("======%s======" % bb.name)
+        logging.info("======%s======" % bb.name)
         nxbb = BB(bb.name, bb)
         if not bb.In and not bb.phis:
-            print("No phi, no in, continue")
+            logging.info("%s has no phi, no in, continue" % bb.name)
             nir += [nxbb]
             continue
         nbb = BB(bb.name)
@@ -141,7 +165,7 @@ def chain_breaker(ir):
         if len(bb.preds) > 1:
             #create phi node to grab the replaced
             #variable from different preds
-            print("Generate additional phi")
+            logging.info("Generate additional phi")
             nphi = []
             for v in bb.In:
                 assert v.is_var
@@ -155,9 +179,9 @@ def chain_breaker(ir):
                         ni.set_source(p, str(v))
                 nphi.append(ni)
                 varmap[v] = Var(v.val+"."+bb.name)
-            print("Rewrite original phi")
+            logging.info("Rewrite original phi")
             for i in bb.phis:
-                print("%s: %s" % (bb.name, i))
+                logging.info("%s: %s" % (bb.name, i))
                 ni = copy.copy(i)
                 for srcbb, v in ni.srcs.items():
                     if v.is_imm:
@@ -166,15 +190,15 @@ def chain_breaker(ir):
                     assert v.is_var
                     if v in sbb.In:
                         changed = True
-                        print("%s in %s's In, change name to %s" % (v, srcbb, str(v)+"."+srcbb))
+                        logging.info("%s in %s's In, change name to %s" % (v, srcbb, str(v)+"."+srcbb))
                         ni.set_source(srcbb, str(v)+"."+srcbb)
                     else :
-                        print("%s not in %s's In" % (v, srcbb))
+                        logging.info("%s not in %s's In" % (v, srcbb))
                 nphi.append(ni)
             nbb += nphi
         else :
             #only one pred, but now the in variables might have changed
-            print("Single pred, rewrite var name")
+            logging.info("Single pred, rewrite var name")
             pred, = bb.preds
             pred = ir.bbmap[pred]
             varmap = {}
@@ -204,10 +228,11 @@ def chain_breaker(ir):
             nbb += [nbr]
         nir += [nbb]
     nir.finish()
-    print(nir)
+    logging.debug(nir)
     for bb in nir.bb:
         assert not bb.In or len(bb.preds) == 1
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
+    unset_log_phase()
     return (changed, nir)
 
 def allocate_bb(bb, bbmap):
@@ -216,7 +241,7 @@ def allocate_bb(bb, bbmap):
     M = Memory()
     R = Registers(M)
     prmap = {}
-    print(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
+    logging.info(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<" % (bb.name))
     if len(bb.preds) == 1:
         assert not bb.phis
         only_pred, = bb.preds
@@ -247,7 +272,7 @@ def allocate_bb(bb, bbmap):
         #register preference:
         #same reg as src > same memory as src > reg different from src > other memory
         for i in bb.phis:
-            print(M)
+            logging.info(M)
             reg = None #reg in srcs not used
             for phibb, v in i.srcs.items():
                 pbb = bbmap[phibb]
@@ -281,20 +306,20 @@ def allocate_bb(bb, bbmap):
                 e, reg = M2.get(i.dst)
                 assert not e
                 M.reserve(i.dst, reg)
-            print("Phi allocation: %s -> %s" % (reg, i.dst))
+            logging.info("Phi allocation: %s -> %s" % (reg, i.dst))
             ret[i.dst] = deque([reg])
             prmap[i.dst] = reg
     #phi allocation ends here
-    print(M)
+    logging.info(M)
     _dict_print(R.vrmap)
     _dict_print(M.vmmap)
     _set_print(bb.In)
     for i in bb.ins+[bb.br]:
         if i.is_phi:
             continue
-        print(i)
+        logging.debug(i)
         ds = i.get_dfn()
-        print(ds)
+        logging.debug(ds)
         u = i.get_used()
         for v in u:
             if v in R:
@@ -314,24 +339,22 @@ def allocate_bb(bb, bbmap):
         if not ds:
             continue
         d, = ds
-        print(d)
-        print("Last use: ")
+        logging.info("%s: Last use: " % i)
         _set_print(i.last_use)
         if len(i.last_use) == 1:
             #reuse the operand register
             R.reserve(d, dreg)
             ret[d] = deque([dreg])
-            print("Reuse %s for %s" % (dreg, d))
+            logging.info("Reuse %s for %s" % (dreg, d))
         else :
             #more than one or none, reuse does not make sense
             reg, s, sm = R.get_may_spill(d)
             ret[d] = deque([reg])
-            print("xxx%s -> %s" % (reg, d))
+            logging.info("xxx%s -> %s" % (reg, d))
             if s:
                 ret[s].append(sm)
     bb.assign_out_reg(R)
-    print("OUT REG!!!")
-    _dict_print(bb.out_reg)
+    logging.info("OUT REG:" + _str_dict(bb.out_reg))
     return (ret, prmap)
 
 def promote_replay(v, R, allocation):
@@ -349,7 +372,7 @@ def promote_replay(v, R, allocation):
         oldv = R.rvmap[r]
         #empty allocation means it's not longer needed
         e, m = allocation[oldv].popleft()
-        print("Store %s(%s) -> %s, for %s" % (oldv, R.vrmap[oldv], m, v))
+        logging.info("Store %s(%s) -> %s, for %s" % (oldv, R.vrmap[oldv], m, v))
         assert m, v
         assert m.is_mem
         if not e:
@@ -358,12 +381,14 @@ def promote_replay(v, R, allocation):
     if v in R.M:
         m = R.M.vmmap[v]
         ret += [Load(r, m)]
-        print("Load %s(%s) -> %s" % (v, m, r))
+        logging.info("Load %s(%s) -> %s" % (v, m, r))
     R.reserve(v, r)
     _dict_print(R.vrmap)
     return ret
 
 def allocate(ir):
+    set_log_phase("allocate")
+    logging.info(ir)
     unallocated_pred = {}
     todo = set()
     mentry = set()
@@ -386,18 +411,18 @@ def allocate(ir):
             if not nbb:
                 continue
             nbb = ir.bbmap[nbb]
-            print("%s-=1" % nbb.name)
+            logging.info("%s-=1" % nbb.name)
             unallocated_pred[nbb] -= 1
             if unallocated_pred[nbb] <= 0 and nbb in todo:
                 queue |= {nbb}
         if not queue and todo:
             #queue empty, find the bb with the least unallocated pred
             candidate = min(mentry, key=unallocated_pred.get)
-            print("%s!_!->%s" % (candidate.name, unallocated_pred[candidate]))
+            logging.info("%s!_!->%s" % (candidate.name, unallocated_pred[candidate]))
             queue = {candidate}
 
     for bb in allocation:
-        print("<=====%s=====>" % bb.name)
+        logging.info("<=====%s=====>" % bb.name)
         res = ""
         for v in allocation[bb]:
             res += ("%s: " % v)
@@ -406,14 +431,14 @@ def allocate(ir):
                     res += ("(%s, %s), " % reg)
                 else :
                     res += ("%s, " % reg)
-        print(res)
+        logging.info(res)
 
 
     nir = IR()
     for bb in ir.bb:
         #generate new ir with registers
         #phi nodes is generated by its predecessors
-        print("!!!!!!!!%s!!!!!!!!" % bb.name)
+        logging.info("!!!!!!!!%s!!!!!!!!" % bb.name)
         R = Registers(Memory())
         pred = None
         nbb = BB(bb.name)
@@ -436,7 +461,7 @@ def allocate(ir):
             vrmap2 = {}
             for v in i.last_use:
                 assert v not in allocation or not allocation[v]
-                print("Last use: %s" % v)
+                logging.info("Last use: %s" % v)
                 vrmap2[v] = R.vrmap[v] #save the allocation
                 R.drop_both(v)
             ds = i.get_dfn()
@@ -469,12 +494,13 @@ def allocate(ir):
             nbb = gen_phi_block(bb, sbb, prmaps[sbb])
             #fallthrough should be put right after
             nir += [nbb]
-        print(bb.name)
+        logging.info(bb.name)
     nir.finish()
+    unset_log_phase()
     return (True, nir)
 
 def gen_phi_block(bb, sbb, prmap):
-    print("Gen Phi block, edge %s -> %s" % (bb.name, sbb.name))
+    logging.info("Gen Phi block, edge %s -> %s" % (bb.name, sbb.name))
     nbb = BB(bb.name+"_"+sbb.name)
     todo = set()
     src_reg = {} #any register holds src
@@ -487,14 +513,14 @@ def gen_phi_block(bb, sbb, prmap):
         dreg = prmap[dst]
         if not src_reg[src] and dreg.is_mem:
             #memory to memory
-            print("Invalid case 1, %s has no reg, and %s's dst is %s" % (src, dst, dreg))
+            logging.info("Invalid case 1, %s has no reg, and %s's dst is %s" % (src, dst, dreg))
             return False
         #does dreg conflict with anything?
         if dreg.is_reg and dreg in dsmap:
-            print("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg]))
+            logging.info("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg]))
             return False
         if dreg.is_mem and dreg.val in dsmap:
-            print("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg.val]))
+            logging.info("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg.val]))
             return False
         return True
 
@@ -635,7 +661,7 @@ def gen_phi_block(bb, sbb, prmap):
         while bool(pairs):
             pairs = [(src, dst) for src in todo for dst in src_rcv[src] if valid_move(src, dst)]
             for src, dst in pairs:
-                print("do_move(%s, %s)" % (src,dst))
+                logging.info("do_move(%s, %s)" % (src,dst))
                 s1ins += do_move(src, dst)
         #no action available, trying to improve the situation
         #we only care about making register dsts available
@@ -664,14 +690,14 @@ def gen_phi_block(bb, sbb, prmap):
                 src_mem[src] = mcell
                 src_reg[src] = None
                 s1ins.append(Store(mcell, creg))
-                print("Resolving conflict by %s(%s)->%s" % (src, creg, mcell))
+                logging.info("Resolving conflict by %s(%s)->%s" % (src, creg, mcell))
             else :
                 #otherwise move to the free reg
                 reg = avail_reg
                 src_reg[src] = reg
                 dsmap[reg] = src
                 s1ins.append(Arithm('+', reg, creg, 0))
-                print("Resolving conflict by %s(%s)->%s" % (src, creg, reg))
+                logging.info("Resolving conflict by %s(%s)->%s" % (src, creg, reg))
         else :
             #there's no register in dsmap, and there're no possible moves
             #which means all remaining dsts are memory
@@ -698,7 +724,7 @@ def gen_phi_block(bb, sbb, prmap):
     if s0tmpreg:
         #tmpreg available during step 0 means we can use it and put all the
         #conflict resolution in step 2 into step 0
-        print("We have one tmpreg during step 0 (which is %s)" % tmpreg)
+        logging.info("We have one tmpreg during step 0 (which is %s)" % tmpreg)
         tmpreg = s0tmpreg
         resolve_ins = s0ins
     else :
@@ -714,7 +740,7 @@ def gen_phi_block(bb, sbb, prmap):
         else :
             tmpreg = avail_reg
 
-    print("First phase done")
+    logging.info("First phase done")
     while todo:
         #pick any src, load it, do all the valid moves, store it somewhere else
         #first see it we can find any src of whom all moves are valid
@@ -737,7 +763,7 @@ def gen_phi_block(bb, sbb, prmap):
                     to_promote = src
                     break
         assert to_promote
-        print("promoting %s to resolve conflicts" % to_promote)
+        logging.info("promoting %s to resolve conflicts" % to_promote)
         _set_print(src_rcv[to_promote])
         pmem = src_mem[to_promote]
         assert pmem, to_promote
@@ -772,7 +798,7 @@ def gen_phi_block(bb, sbb, prmap):
                     if prmap[dst].val not in dsmap:
                         pairs.append((src, dst))
             for src, dst in pairs:
-                print("reg to mem(%s, %s)" % (src,dst))
+                logging.info("reg to mem(%s, %s)" % (src,dst))
                 s2ins.append(Store(prmap[dst], src_reg[src]))
                 src_rcv[src] -= {dst}
                 if not src_rcv[src]:

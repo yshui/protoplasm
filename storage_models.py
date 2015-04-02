@@ -1,6 +1,7 @@
 from IR import Cell, Var, Register, Load, Store, all_reg
 from collections import OrderedDict
 from utils import _str_dict
+import logging
 class Registers:
     def __init__(self, M=None):
         self.avail_reg = OrderedDict([(x, 1) for x in all_reg])
@@ -96,14 +97,14 @@ class Registers:
             e, mcell = self.M.get(oldvar)
             spilt = oldvar
             spmem = (e, mcell)
-            print("Demoted %s from %s to %s, %s" % (spilt, reg, mcell, e))
+            logging.info("Demoted %s from %s to %s, %s" % (spilt, reg, mcell, e))
         if var not in self.M:
             #if it is not in vrmap before, and it is not in memory either
             #must be a newly defined dst
             assert var.dst, var
-            print("Prmoted %s from nothing to %s" % (var, reg))
+            logging.info("Prmoted %s from nothing to %s" % (var, reg))
         else :
-            print("Promoted %s from %s to %s" % (var, self.M.vmmap[var], reg))
+            logging.info("Promoted %s from %s to %s" % (var, self.M.vmmap[var], reg))
 
         return (reg, spilt, spmem)
 
@@ -129,7 +130,7 @@ class Memory:
             res += "%d, " % m
         return res
     def reserve(self, var, pos):
-        print("Reserve %s -> %s" % (var, pos))
+        logging.debug("Reserve %s -> %s" % (var, pos))
         assert pos.is_mem
         assert pos.val not in self.mvmap, "%s %s %s" % (var, pos, self.mvmap[pos.val])
         var = Var(var.val)

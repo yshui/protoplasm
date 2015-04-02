@@ -1,3 +1,4 @@
+import logging
 def _str_set(a):
     res = "set("
     for b in a:
@@ -11,9 +12,9 @@ def _str_dict(d):
     res += "}"
     return res
 def _dict_print(d):
-    print(_str_dict(d))
+    logging.debug(_str_dict(d))
 def _set_print(a):
-    print(_str_set(a))
+    logging.debug(_str_set(a))
 
 def get_father(x, p):
     if p[x] == x:

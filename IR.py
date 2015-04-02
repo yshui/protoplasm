@@ -1,6 +1,7 @@
 import copy
 from utils import _str_set, _dict_print, _set_print
 from functools import reduce
+import logging
 
 usable_reg = []
 for __i in range(0, 10):
@@ -193,7 +194,7 @@ class Arithm(NIns):
             assert False
         if self.opr2.is_imm:
             if self.opr2.val == 0 and self.opr1 == self.dst:
-                print("%s is NOP" % self)
+                logging.info("%s is NOP" % self)
                 return ""
         assert self.opr1.is_reg
         assert self.opr2.is_reg or self.opr2.is_imm
@@ -339,7 +340,7 @@ class Br(BaseIns):
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
-        print(regmap)
+        logging.debug(regmap)
         self.src = self.src.allocate(regmap)
     def get_dfn(self):
         return set()
@@ -391,13 +392,13 @@ class Phi:
     def validate(self, bb, bbmap):
         for src, var in self.srcs.items():
             #does src point to us?
-            print("{0} does point to us".format(src))
+            logging.debug("{0} does point to us".format(src))
             #are we referring to ourselves?
             #assert not var == self.dst, "Phi %s -> %s" % (var, self.dst)
             #is var defined in src?
             _dfn = bbmap[src].internal_dfn|bbmap[src].avail_dfn
             var.validate(_dfn)
-            print("{0} is defined in {1}".format(var, src))
+            logging.debug("{0} is defined in {1}".format(var, src))
         for pred in bb.preds:
             assert pred in self.srcs
         assert len(bb.preds) == len(self.srcs)
@@ -727,12 +728,12 @@ class IR:
             f.write(bb.gencode(nextbb))
         f.close()
     def finish(self):
-        print(self)
+        logging.debug(self)
         for bb in self.bb:
             bb.finish()
         self.calc_connections()
         self.calc_avail()
-        print(self)
+        logging.info(self)
         self.validate()
         self.calc_inout()
         for bb in self.bb:

@@ -3,9 +3,6 @@ from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, While, UOP
 from lexer import tokens
 import sys
 import logging
-logging.basicConfig(
-    level=logging.ERROR,
-)
 precedence = (
     ('left', 'OR'),
     ('left', 'AND'),
@@ -108,6 +105,9 @@ parser = yacc.yacc()
 
 if __name__ == "__main__" :
     f = open(sys.argv[1], "r")
+    logging.basicConfig(
+        level=logging.ERROR,
+    )
     log = logging.getLogger()
     res = parser.parse(f.read(), debug=log)
     print(res)
