@@ -3,36 +3,8 @@ from utils import _str_set, _dict_print, _set_print
 from functools import reduce
 
 usable_reg = []
-for __i in range(0, 2):
+for __i in range(0, 10):
     usable_reg += ["t{0}".format(__i)]
-
-def parse_bbname(name):
-    ret = [0, 0, 0, 0]
-    ep = name.find('EP')
-    if ep >= 0:
-        ret[3] = int(name[ep+2:])
-        name = name[:ep]
-    ep = name.find('T')
-    if ep >= 0:
-        ret[2] = int(name[ep+1:])
-        name = name[:ep]
-    ep = name.find('O')
-    if ep >= 0:
-        ret[1] = int(name[ep+1:])
-        name = name[:ep]
-    ret[0] = int(name[1:])
-    return ret
-
-def build_bbname(no, o, t, ep):
-    name = "L"+str(no[0])
-    if no[1]+o:
-        name += "O"+str(no[1]+o)
-    if no[2]+t:
-        name += "T"+str(no[2]+t)
-    if no[3]+ep:
-        name += "EP"+str(no[3]+ep)
-    return name
-
 def gen_rvmap(*arg):
     #res = ""
     #for v in arg:

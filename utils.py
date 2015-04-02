@@ -4,12 +4,14 @@ def _str_set(a):
         res += str(b)+", "
     res += ")"
     return res
-def _dict_print(d):
+def _str_dict(d):
     res = "{"
     for k, v in d.items():
         res += ", %s: %s" % (k, v)
     res += "}"
-    print(res)
+    return res
+def _dict_print(d):
+    print(_str_dict(d))
 def _set_print(a):
     print(_str_set(a))
 

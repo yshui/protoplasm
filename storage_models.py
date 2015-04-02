@@ -1,8 +1,9 @@
 from IR import Cell, Var, Register, Load, Store, all_reg
 from collections import OrderedDict
+from utils import _str_dict
 class Registers:
     def __init__(self, M=None):
-        self.avail_reg = set(all_reg)
+        self.avail_reg = OrderedDict([(x, 1) for x in all_reg])
         assert self.avail_reg, "No available register found!!"
         self.vrmap = {}
         self.rvmap = OrderedDict() #ordered dict to support LRU
@@ -21,12 +22,12 @@ class Registers:
     def reserve(self, var, reg):
         if reg.is_reg:
             assert reg not in self.rvmap
-            assert reg in self.avail_reg
+            assert reg in self.avail_reg, (str(reg), _str_dict(self.avail_reg))
             var = Var(var.val)
             self.vrmap[var] = reg
             reg = Register(reg.val)
             self.rvmap[reg] = var
-            self.avail_reg -= {reg}
+            del self.avail_reg[reg]
         else :
             assert reg.is_mem
             assert var not in self.M
@@ -38,7 +39,7 @@ class Registers:
             return reg
         if not self.avail_reg:
             return None
-        reg = next(iter(self.avail_reg))
+        reg, *_ = self.avail_reg
         self.reserve(var, reg)
         return reg
     def _dropv(self, var):
@@ -46,7 +47,7 @@ class Registers:
             return
         reg = self.vrmap[var]
         del self.vrmap[var]
-        self.avail_reg |= {reg}
+        self.avail_reg[reg] = 1
         assert reg in self.rvmap, reg
         del self.rvmap[reg]
     def drop(self, o):
@@ -89,8 +90,7 @@ class Registers:
         if not reg:
             #no reg found
             #spill register, in LRU order
-            reg = next(iter(self.rvmap))
-            oldvar = self.rvmap[reg]
+            (reg, oldvar), *_ = self.rvmap.items()
             self.drop(oldvar)
             self.reserve(var, reg)
             e, mcell = self.M.get(oldvar)

@@ -1,8 +1,33 @@
-from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, parse_bbname, build_bbname
+from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret
 import copy
-def error(st):
-        raise Exception("Unexpected {0}({1}) at {2}, {3}".
-                        format(st[1], st[0], st[2][0], st[2][1]))
+
+def parse_bbname(name):
+    ret = [0, 0, 0, 0]
+    ep = name.find('EP')
+    if ep >= 0:
+        ret[3] = int(name[ep+2:])
+        name = name[:ep]
+    ep = name.find('T')
+    if ep >= 0:
+        ret[2] = int(name[ep+1:])
+        name = name[:ep]
+    ep = name.find('O')
+    if ep >= 0:
+        ret[1] = int(name[ep+1:])
+        name = name[:ep]
+    ret[0] = int(name[1:])
+    return ret
+
+def build_bbname(no, o, t, ep):
+    name = "L"+str(no[0])
+    if no[1]+o:
+        name += "O"+str(no[1]+o)
+    if no[2]+t:
+        name += "T"+str(no[2]+t)
+    if no[3]+ep:
+        name += "EP"+str(no[3]+ep)
+    return name
+
 class VarVer:
     #this class is used to keep track of variable version
     #since we are using SSA here

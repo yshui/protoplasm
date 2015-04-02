@@ -94,60 +94,37 @@ def jump_block_removal(ir):
 def block_coalesce(ir):
     removed = set()
     nir = IR()
-    changed = True
-    nextbb = {}
-    bbb = set()
-    prev = None
-    nbbmap = {}
-    for bb in ir.bb:
-        if prev:
-            if prev.fall_through:
-                nextbb[prev.name] = bb.name
-            else :
-                bbb |= {bb.name}
-                nextbb[prev.name] = None
-        prev = bb
-    nextbb[prev.name] = None
-    print(nextbb)
     for bb in ir.bb:
         #if a is b's only succ, b is a's only pred
         #append a to b
         #we need to rebuild the fallthrough chain
-        nxbb = BB(bb.name, bb.ins)
-        nbbmap[bb.name] = nxbb
         if bb.name in removed:
             continue
-        if len(bb.succs) != 1:
-            continue
-        succ, = bb.succs
-        succ = ir.bbmap[succ]
-        if len(succ.preds) > 1:
-            continue
-        #assert bb.name in set(succ.preds)
-        if succ.phis:
-            continue
-        nbb = BB(bb.name)
-        nbb += bb.nonbr_ins
-        nbb += succ.ins
-        nextbb[bb.name] = nextbb[succ.name]
-        del nextbb[succ.name]
-        bbb -= {succ.name}
-        nbbmap[bb.name] = nbb
-        removed |= {succ.name}
-        changed = True
-
-    now = ir.bb[0].name
-    while True:
-        nir += [nbbmap[now]]
-        now = nextbb[now]
-        if not now:
-            if bbb:
-                now = bbb.pop()
-            else :
+        assert not bb.phis
+        nxbb = BB(bb.name)
+        nxbb += bb.ins
+        now = bb
+        while not now.succs[1]:
+            succ, _ = now.succs
+            if not succ:
                 break
+            succ = ir.bbmap[succ]
+            assert not succ.phis
+            if len(succ.preds) != 1:
+                break
+            print("%s <-> %s is one to one, remove %s" % (succ.name, now.name, succ.name))
+            nxbb += succ.ins
+            removed |= {succ.name}
+            now = succ
+        nxbb += [now.br]
+        #assert bb.name in set(succ.preds)
+        nir += [nxbb]
     nir.finish()
 
-    return (changed, nir)
+    if not removed:
+        print("Block coalesce done, no changes")
+
+    return (bool(removed), nir)
 def chain_breaker(ir):
     nir = IR()
     changed = False
