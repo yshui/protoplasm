@@ -205,10 +205,18 @@ class Arithm(NIns):
         self.op = self.opc[op]
         self.dst = get_operand(dst, True)
         self.opr1 = get_operand(opr1)
-        if self.opr1.is_imm:
-            assert self.opr1.val == 0
-            self.opr1 = Register("r0")
         self.opr2 = get_operand(opr2)
+        if self.opr1.is_imm:
+            if self.opr1.val == 0:
+                #use the 0 register
+                self.opr1 = Register("r0")
+            elif self.op in {1, 3, 6, 7}:
+                #swap opr1 and opr2 for +, *, &, |
+                self.opr1, self.opr2 = self.opr2, self.opr1
+            else :
+                #otherwise fail
+                assert False
+
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
         self.opr1 = self.opr1.allocate(regmap)
@@ -636,6 +644,8 @@ class BB:
             i.validate(_dfn)
             _dfn |= i.get_dfn()
     def liveness(self):
+        #we assume there're no unreachable code
+        #we have a pruning pass to make sure of that
         alive = set(self.out)
         for i in reversed(self.ins+[self.br]):
             u = i.get_used()
@@ -644,6 +654,10 @@ class BB:
                 if v not in alive:
                     i.last_use |= {v}
                     alive |= {v}
+            ds = i.get_dfn()
+            if ds:
+                d, = ds
+                alive -= {d}
 
     def assign_out_reg(self, R):
         for v in self.out:

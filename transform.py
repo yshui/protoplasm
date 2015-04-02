@@ -1,6 +1,6 @@
 from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, IPrnt, Load, Store, Br, Register, all_reg
 from collections import deque
-from utils import _set_print, _dict_print, _str_dict, link, get_father
+from utils import _set_print, _dict_print, _str_dict, _str_set, link, get_father
 from storage_models import Memory, Registers
 import copy
 import sys
@@ -32,6 +32,7 @@ def prune_unused(ir):
     used = set()
     queue = set()
     #instructions doesn't produce a result is a *real* use of its operands
+    #then we do reachability test from there
     for bb in ir.bb:
         for i in bb.phis+bb.ins+[bb.br]:
             ds = i.get_dfn()
@@ -339,8 +340,7 @@ def allocate_bb(bb, bbmap):
         if not ds:
             continue
         d, = ds
-        logging.info("%s: Last use: " % i)
-        _set_print(i.last_use)
+        logging.info("%s: Last use: %s " % (i, _str_set(i.last_use)))
         if len(i.last_use) == 1:
             #reuse the operand register
             R.reserve(d, dreg)

@@ -88,7 +88,7 @@ class UOP(Expr):
         copr = self.opr.get_result(varv, ir)
         cdst = varv.next_ver(dst)
         if self.op == '!':
-            bb += [Cmp(0, copr, 0, cdst)]
+            bb += [Cmp('==', copr, 0, cdst)]
         elif self.op == '-':
             bb += [Arithm('-', cdst, copr, 0)]
         else :
@@ -128,6 +128,10 @@ class BinOP(Expr):
             rres = self.ropr.get_result(varv, ir)
             dst = varv.next_ver(dst)
             if self.op in arithm:
+                if isinstance(lres, int) and self.op in {'//', '%', '-'}:
+                    #generate a temp variable to hold the imm
+                    bb += [Load(varv.next_ver("tmp"), lres)]
+                    lres = varv.curr_ver("tmp")
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
                 bb += [Cmp(self.op, lres, rres, dst)]
@@ -163,8 +167,9 @@ class BinOP(Expr):
         return self.lopr.is_constant and self.ropr.is_constant
     def get_result(self, varv, ir):
         if self.is_constant:
-            ll = self.lopr.get_result(ir, varv, ir)
-            rr = self.ropr.get_result(ir, varv, ir)
+            print(self.lopr)
+            ll = self.lopr.get_result(varv, ir)
+            rr = self.ropr.get_result(varv, ir)
             if self.op not in {'&&', '||'} :
                 return int(eval("%d %s %d" % (ll, self.op, rr)))
             elif self.op == '&&' :
@@ -192,6 +197,8 @@ class BinOP(Expr):
         else :
             self.op = "//"
     def wellformed(self, defined):
+        print(self.lopr)
+        print(self.ropr)
         return self.lopr.wellformed(defined) and self.ropr.wellformed(defined)
 
 class Var(Expr):
