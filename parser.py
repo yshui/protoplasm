@@ -27,20 +27,31 @@ def p_stmt_list(p):
     p[0] = p[1]
 
 def p_stmt(p):
-    '''stmt : assign
-            | print
+    '''stmt : assign SEMICOLON
+            | print SEMICOLON
             | block
             | if
             | while
     '''
     p[0] = p[1]
 
+def p_lvalue_id(p):
+    'lvalue : ID'
+    p[0] = Var(p[1], p.lineno(1))
+
 def p_assign(p):
-    'assign : ID ASSIGN expr SEMICOLON'
-    p[0] = Asgn(Var(p[1], p.lineno(1)), p[3], p.lineno(1))
+    'assign : lvalue ASSIGN expr'
+    p[0] = Asgn(p[1], p[3], p.lineno(1))
+
+#def p_assign_incdec:
+#    '''assign : ID INC
+#              | ID DEC
+#              | INC ID
+#              | DEC ID
+#    '''
 
 def p_print(p):
-    'print : PRINT LPAREN expr RPAREN SEMICOLON'
+    'print : PRINT LPAREN expr RPAREN'
     p[0] = Prnt(p[3], p.lineno(1))
 
 def p_block(p):
@@ -84,6 +95,10 @@ def p_expr_number(p):
 def p_expr_paren(p):
     'expr : LPAREN expr RPAREN'
     p[0] = p[2]
+
+def p_expr_asgn(p):
+    'expr : assign'
+    p[0] = p[1]
 
 def p_expr_var(p):
     'expr : ID'

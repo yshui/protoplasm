@@ -9,11 +9,11 @@ import pdb
 
 if __name__ == "__main__":
     f = open(sys.argv[1], "r")
-    res = parser.parse(f.read()) #, debug=logging.getLogger())
     logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
     lhdlr = logging.StreamHandler(stream=sys.stderr)
     logger.addHandler(lhdlr)
-    logger.setLevel(logging.INFO)
+    res = parser.parse(f.read(), debug=logger)
     logging.info(res)
     logging.info(res.wellformed(set()))
     ir = IR()

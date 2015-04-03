@@ -24,19 +24,20 @@ class Expr:
     @property
     def is_constant(self):
         return False
-    @property
-    def const_result(self):
+    def const_result(self, *_):
         assert False
     def noconst_emit(self, varv, ir, dst):
         return None
     def const_emit(self, varv, ir, dst):
         assert self.is_constant
         cdst = varv.next_ver(dst)
-        res = self.const_result
+        res = self.const_result(varv, ir)
 
         bb = ir.last_bb
         bb += [Load(cdst, res)]
+        return cdst
     def emit(self, varv, ir, dst):
+        print("XX!%s" % self)
         if self.is_constant:
             self.const_emit(varv, ir, dst)
         else :
@@ -47,10 +48,11 @@ class Expr:
             if noconst:
                 return self.const_emit(varv, ir, 'tmp')
             else :
-                return self.const_result
+                return self.const_result(varv, ir)
         self.noconst_emit(varv, ir, 'tmp')
-        print(self)
         return varv.curr_ver('tmp')
+    def get_defined(self):
+        return set()
 
 class Asgn(Expr):
     def __str__(self):
@@ -60,28 +62,36 @@ class Asgn(Expr):
         self.lhs = lhs
         self.rhs = rhs
         self.linenum = linenum
+        self.emitted = False
     @property
     def is_constant(self):
         return self.rhs.is_constant
-    @property
-    def const_result(self):
-        return self.rhs.const_result
-    def noconst_emit(self, varv, ir, dst):
+    def const_result(self, varv, ir):
+        print("cr(%s)" % self)
+        self.asgn_noconst_emit(varv, ir)
+        return self.rhs.const_result(varv, ir)
+    def asgn_noconst_emit(self, varv, ir):
+        if self.emitted:
+            return
+        print("ncemit(%s)" % self)
+        self.emitted = True
         self.rhs.emit(varv, ir, self.lhs.name)
-        if dst:
-            bb = ir.last_bb
-            bb += [Arithm('+', dst, varv.curr_ver(self.lhs.name), 0)]
+        #if dst:
+            #dst = varv.next_ver(dst)
+            #bb = ir.last_bb
+            #bb += [Arithm('+', dst, varv.curr_ver(self.lhs.name), 0)]
     def emit(self, varv, ir, dst=None):
         self.noconst_emit(varv, ir, dst)
     def get_result(self, varv, ir, noconst=False):
         if self.is_constant and not noconst:
-            return self.const_result
-        self.rhs.emit(varv, ir, self.lhs.name)
-        return varv.curr_ver(self.lhs.name)
+            return self.const_result(varv, ir)
+        else :
+            self.asgn_noconst_emit(varv, ir)
+            return varv.curr_ver(self.lhs.name)
     def wellformed(self, defined):
         return self.rhs.wellformed(defined)
     def get_defined(self):
-        return {self.lhs.name}
+        return {self.lhs.name}|self.rhs.get_defined()
 
 class UOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -97,10 +107,9 @@ class UOP(Expr):
     @property
     def is_constant(self):
         return self.opr.is_constant
-    @property
-    def const_result(self):
+    def const_result(self, varv, ir):
         assert self.is_constant
-        oo = self.opr.const_result
+        oo = self.opr.const_result(varv, ir)
         if self.op == '!' :
             return not oo
         elif self.op == '-' :
@@ -115,6 +124,8 @@ class UOP(Expr):
         self.linenum = linenum
     def wellformed(self, defined):
         return self.opr.wellformed(defined)
+    def get_defined(self):
+        return self.opr.get_defined()
 
 class BinOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -128,6 +139,8 @@ class BinOP(Expr):
             rres = self.ropr.get_result(varv, ir)
             bb = ir.last_bb
             dst = varv.next_ver(dst)
+            print(lres)
+            print(rres)
             if self.op in arithm:
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
@@ -168,11 +181,10 @@ class BinOP(Expr):
     @property
     def is_constant(self):
         return self.lopr.is_constant and self.ropr.is_constant
-    @property
-    def const_result(self):
+    def const_result(self, varv, ir):
         assert self.is_constant
-        ll = self.lopr.const_result
-        rr = self.ropr.const_result
+        ll = self.lopr.const_result(varv, ir)
+        rr = self.ropr.const_result(varv, ir)
         if self.op not in {'&&', '||'} :
             return int(eval("%d %s %d" % (ll, self.op, rr)))
         elif self.op == '&&' :
@@ -201,6 +213,8 @@ class BinOP(Expr):
         print(self.lopr)
         print(self.ropr)
         return self.lopr.wellformed(defined) and self.ropr.wellformed(defined)
+    def get_defined(self):
+        return self.lopr.get_defined()|self.ropr.get_defined()
 
 class Var(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -232,8 +246,7 @@ class Num(Expr):
     @property
     def is_constant(self):
         return True
-    @property
-    def const_result(self):
+    def const_result(self, varv, ir):
         return self.number
     def __str__(self):
         return "Num({0})".format(self.number)
@@ -266,6 +279,8 @@ class Inpt:
         return varv.curr_ver('tmp')
     def wellformed(self, defined):
         return True
+    def get_defined(self):
+        return set()
 
 class Prnt:
     def __str__(self):
@@ -274,11 +289,12 @@ class Prnt:
         self.linenum = linenum
         self.expr = expr
     def emit(self, varv, ir):
+        print(self.expr)
         res = self.expr.get_result(varv, ir)
         bb = ir.last_bb
         bb += [IPrnt(res)]
     def get_defined(self):
-        return set()
+        return self.expr.get_defined()
     def wellformed(self, defined):
         return self.expr.wellformed(defined)
 
@@ -367,13 +383,14 @@ class If:
             res = res and self.e.wellformed(defined)
         return res
     def get_defined(self):
+        cond_dfn = self.cond.get_defined()
         if not self.e :
             #in case the then branch is not run
-            return set()
+            return cond_dfn
         #variables must be in both branch to be defined
         td = self.then.get_defined()
         te = self.e.get_defined()
-        return td&te
+        return (td&te)|cond_dfn
 
 class While:
     def __init__(self, cond, do, linenum=0):
@@ -433,13 +450,14 @@ class While:
         return self.do.wellformed(defined)
     def get_defined(self):
         #if a loop is not run, nothing is defined
-        #so defined is ()
-        return set()
+        #so defined is only what defined in the condition
+        return self.cond.get_defined()
 
 class Block:
     def emit(self, varv, ir):
         for w in self.expr_list:
             w.emit(varv, ir)
+            print(ir)
         if self.is_top:
             bb = ir.last_bb
             if bb.br:
