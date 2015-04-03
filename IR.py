@@ -54,7 +54,7 @@ class Cell(BassOpr):
         return set()
     def get_offset(self):
         return str(self.val*4)
-    def allocate(self):
+    def allocate(self, _):
         assert False, "Cannot allocate register for a cell"
 
 class Register(BassOpr):
@@ -74,7 +74,7 @@ class Register(BassOpr):
         return "$"+self.val
     def get_used(self):
         return set()
-    def allocate(self):
+    def allocate(self, _):
         assert False, "Cannot allocate register for a register"
 
 class Imm(BassOpr):

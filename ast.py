@@ -37,7 +37,6 @@ class Expr:
         bb += [Load(cdst, res)]
         return cdst
     def emit(self, varv, ir, dst):
-        print("XX!%s" % self)
         if self.is_constant:
             self.const_emit(varv, ir, dst)
         else :
@@ -54,6 +53,40 @@ class Expr:
     def get_defined(self):
         return set()
 
+class Inc(Expr):
+    def __init__(self, lval, pos, op):
+        self.pos = pos
+        self.op = op
+        self.lval = lval
+        self.res = None
+    def __str__(self):
+        insn = ['Inc', 'Dec']
+        pos = ['Pre', 'Post']
+        return "%s%s(%s)" % (pos[self.pos], insn[self.op], self.lval)
+    @property
+    def is_constant(self):
+        return False
+    def emit(self, varv, ir, dst=None):
+        opr = varv.curr_ver(self.lval.name)
+        bb = ir.last_bb
+        opn = ['+', '-']
+        if not self.res:
+            self.res = opr
+            cdst = varv.next_ver(self.lval.name)
+            bb += [Arithm(opn[self.op], cdst, opr, 1)]
+            if self.pos == 0: #pre
+                self.res = cdst
+        if dst:
+            dst = varv.next_ver(dst)
+            bb += [Arithm('+', dst, self.res, 0)]
+    def get_result(self, varv, ir, noconst=False):
+        self.emit(varv, ir)
+        return self.res
+    def wellformed(self, dfn):
+        self.lval.wellformed(dfn)
+    def get_defined(self):
+        return self.lval.get_defined()
+
 class Asgn(Expr):
     def __str__(self):
         return "Asgn({0} = {1})".format(self.lhs, self.rhs)
@@ -62,32 +95,28 @@ class Asgn(Expr):
         self.lhs = lhs
         self.rhs = rhs
         self.linenum = linenum
-        self.emitted = False
+        self.res = None
     @property
     def is_constant(self):
         return self.rhs.is_constant
     def const_result(self, varv, ir):
-        print("cr(%s)" % self)
-        self.asgn_noconst_emit(varv, ir)
+        self.emit(varv, ir)
         return self.rhs.const_result(varv, ir)
-    def asgn_noconst_emit(self, varv, ir):
-        if self.emitted:
-            return
-        print("ncemit(%s)" % self)
-        self.emitted = True
-        self.rhs.emit(varv, ir, self.lhs.name)
-        #if dst:
-            #dst = varv.next_ver(dst)
-            #bb = ir.last_bb
-            #bb += [Arithm('+', dst, varv.curr_ver(self.lhs.name), 0)]
     def emit(self, varv, ir, dst=None):
-        self.noconst_emit(varv, ir, dst)
+        if self.res:
+            return
+        self.rhs.emit(varv, ir, self.lhs.name)
+        self.res = varv.curr_ver(self.lhs.name)
+        if dst:
+            dst = varv.next_ver(dst)
+            bb = ir.last_bb
+            bb += [Arithm('+', dst, self.lhs.name, 0)]
     def get_result(self, varv, ir, noconst=False):
         if self.is_constant and not noconst:
             return self.const_result(varv, ir)
         else :
-            self.asgn_noconst_emit(varv, ir)
-            return varv.curr_ver(self.lhs.name)
+            self.emit(varv, ir)
+            return self.res
     def wellformed(self, defined):
         return self.rhs.wellformed(defined)
     def get_defined(self):
@@ -457,7 +486,6 @@ class Block:
     def emit(self, varv, ir):
         for w in self.expr_list:
             w.emit(varv, ir)
-            print(ir)
         if self.is_top:
             bb = ir.last_bb
             if bb.br:

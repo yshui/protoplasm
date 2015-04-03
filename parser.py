@@ -1,5 +1,5 @@
 import ply.yacc as yacc
-from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, While, UOP
+from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, While, UOP, Inc
 from lexer import tokens
 import sys
 import logging
@@ -43,13 +43,22 @@ def p_assign(p):
     'assign : lvalue ASSIGN expr'
     p[0] = Asgn(p[1], p[3], p.lineno(1))
 
-#def p_assign_incdec:
-#    '''assign : ID INC
-#              | ID DEC
-#              | INC ID
-#              | DEC ID
-#    '''
-
+def p_assign_incdec_post(p):
+    '''assign : lvalue INC
+              | lvalue DEC
+    '''
+    if p[2] == '++':
+        p[0] = Inc(p[1], 1, 0)
+    else :
+        p[0] = Inc(p[1], 1, 1)
+def p_assign_incdec_pre(p):
+    '''assign : INC lvalue
+              | DEC lvalue
+    '''
+    if p[1] == '++':
+        p[0] = Inc(p[2], 0, 0)
+    else :
+        p[0] = Inc(p[2], 0, 1)
 def p_print(p):
     'print : PRINT LPAREN expr RPAREN'
     p[0] = Prnt(p[3], p.lineno(1))
