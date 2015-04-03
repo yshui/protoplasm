@@ -17,14 +17,42 @@ class VarVer:
             self.d[name] += 1
         return "%"+name+"."+str(self.d[name])
     def curr_ver(self, name):
-        assert name in self.d
+        assert name in self.d, name
         return "%"+name+"."+str(self.d[name])
 
-#methods of AST classes:
-# reduce: used to create AST class from symbols
-# emit: emit the intermediate code
+class Expr:
+    @property
+    def is_constant(self):
+        return False
+    @property
+    def const_result(self):
+        assert False
+    def noconst_emit(self, varv, ir, dst):
+        return None
+    def const_emit(self, varv, ir, dst):
+        assert self.is_constant
+        cdst = varv.next_ver(dst)
+        res = self.const_result
 
-class Asgn:
+        bb = ir.last_bb
+        bb += [Load(cdst, res)]
+    def emit(self, varv, ir, dst):
+        if self.is_constant:
+            self.const_emit(varv, ir, dst)
+        else :
+            self.noconst_emit(varv, ir, dst)
+    def get_result(self, varv, ir, noconst=False):
+        assert isinstance(noconst, bool)
+        if self.is_constant:
+            if noconst:
+                return self.const_emit(varv, ir, 'tmp')
+            else :
+                return self.const_result
+        self.noconst_emit(varv, ir, 'tmp')
+        print(self)
+        return varv.curr_ver('tmp')
+
+class Asgn(Expr):
     def __str__(self):
         return "Asgn({0} = {1})".format(self.lhs, self.rhs)
     def __init__(self, lhs, rhs, linenum=0):
@@ -32,32 +60,31 @@ class Asgn:
         self.lhs = lhs
         self.rhs = rhs
         self.linenum = linenum
-    def emit(self, varv, ir):
+    @property
+    def is_constant(self):
+        return self.rhs.is_constant
+    @property
+    def const_result(self):
+        return self.rhs.const_result
+    def noconst_emit(self, varv, ir, dst):
         self.rhs.emit(varv, ir, self.lhs.name)
+        if dst:
+            bb = ir.last_bb
+            bb += [Arithm('+', dst, varv.curr_ver(self.lhs.name), 0)]
+    def emit(self, varv, ir, dst=None):
+        self.noconst_emit(varv, ir, dst)
+    def get_result(self, varv, ir, noconst=False):
+        if self.is_constant and not noconst:
+            return self.const_result
+        self.rhs.emit(varv, ir, self.lhs.name)
+        return varv.curr_ver(self.lhs.name)
     def wellformed(self, defined):
         return self.rhs.wellformed(defined)
     def get_defined(self):
         return {self.lhs.name}
 
-class Expr:
-    @property
-    def is_constant(self):
-        return False
-    def get_result(self, varv, ir):
-        return None
-    def const_emit(self, varv, ir, dst):
-        assert self.is_constant
-        cdst = varv.next_ver(dst)
-        res = self.get_result(varv, ir)
-
-        bb = ir.last_bb
-        bb += [Load(cdst, res)]
-
 class UOP(Expr):
-    def emit(self, varv, ir, dst):
-        if self.is_constant:
-            self.const_emit(varv, ir, dst)
-            return
+    def noconst_emit(self, varv, ir, dst):
         copr = self.opr.get_result(varv, ir)
         bb = ir.last_bb
         cdst = varv.next_ver(dst)
@@ -70,17 +97,16 @@ class UOP(Expr):
     @property
     def is_constant(self):
         return self.opr.is_constant
-    def get_result(self, varv, ir):
-        if self.is_constant:
-            oo = self.opr.get_result(varv, ir)
-            if self.op == '!' :
-                return not oo
-            elif self.op == '-' :
-                return -oo
-            else :
-                assert False
-        self.emit(varv, ir, 'tmp')
-        return varv.curr_ver('tmp')
+    @property
+    def const_result(self):
+        assert self.is_constant
+        oo = self.opr.const_result
+        if self.op == '!' :
+            return not oo
+        elif self.op == '-' :
+            return -oo
+        else :
+            assert False
     def __str__(self):
         return "UOP({0},{1})".format(self.op, self.opr)
     def __init__(self, op, opr, linenum=0):
@@ -91,21 +117,18 @@ class UOP(Expr):
         return self.opr.wellformed(defined)
 
 class BinOP(Expr):
-    def emit(self, varv, ir, dst):
-        if self.is_constant:
-            self.const_emit(varv, ir, dst)
-            return
+    def noconst_emit(self, varv, ir, dst):
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
         if self.op not in {'&&', '||'}:
-            lres = self.lopr.get_result(varv, ir)
+            if self.op in {'//', '%', '-'}:
+                #for these operators, we don't want the left to be constant
+                lres = self.lopr.get_result(varv, ir, True)
+            else :
+                lres = self.lopr.get_result(varv, ir)
             rres = self.ropr.get_result(varv, ir)
             bb = ir.last_bb
             dst = varv.next_ver(dst)
             if self.op in arithm:
-                if isinstance(lres, int) and self.op in {'//', '%', '-'}:
-                    #generate a temp variable to hold the imm
-                    bb += [Load(varv.next_ver("tmp"), lres)]
-                    lres = varv.curr_ver("tmp")
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
                 bb += [Cmp(self.op, lres, rres, dst)]
@@ -145,27 +168,25 @@ class BinOP(Expr):
     @property
     def is_constant(self):
         return self.lopr.is_constant and self.ropr.is_constant
-    def get_result(self, varv, ir):
-        if self.is_constant:
-            print(self.lopr)
-            ll = self.lopr.get_result(varv, ir)
-            rr = self.ropr.get_result(varv, ir)
-            if self.op not in {'&&', '||'} :
-                return int(eval("%d %s %d" % (ll, self.op, rr)))
-            elif self.op == '&&' :
-                if not ll:
-                    return 0
-                else :
-                    return rr
-            elif self.op == '||' :
-                if ll :
-                    return ll
-                else :
-                    return rr
+    @property
+    def const_result(self):
+        assert self.is_constant
+        ll = self.lopr.const_result
+        rr = self.ropr.const_result
+        if self.op not in {'&&', '||'} :
+            return int(eval("%d %s %d" % (ll, self.op, rr)))
+        elif self.op == '&&' :
+            if not ll:
+                return 0
             else :
-                assert False
-        self.emit(varv, ir, 'tmp')
-        return varv.curr_ver('tmp')
+                return rr
+        elif self.op == '||' :
+            if ll :
+                return ll
+            else :
+                return rr
+        else :
+            assert False
     def __str__(self):
         return "BinOP({0},{1},{2})".format(self.lopr, self.op, self.ropr)
     def __init__(self, opr1, op, opr2, linenum=0):
@@ -182,7 +203,7 @@ class BinOP(Expr):
         return self.lopr.wellformed(defined) and self.ropr.wellformed(defined)
 
 class Var(Expr):
-    def emit(self, varv, ir, dst):
+    def noconst_emit(self, varv, ir, dst):
         src = varv.curr_ver(self.name)
         dst = varv.next_ver(dst)
         bb = ir.last_bb
@@ -190,7 +211,7 @@ class Var(Expr):
     @property
     def is_constant(self):
         return False
-    def get_result(self, varv, ir):
+    def get_result(self, varv, ir, _=False):
         return varv.curr_ver(self.name)
     def __init__(self, name, linenum=0):
         self.name = name
@@ -211,9 +232,8 @@ class Num(Expr):
     @property
     def is_constant(self):
         return True
-    def emit(self, varv, ir, dst):
-        self.const_emit(varv, ir, dst)
-    def get_result(self, varv, ir):
+    @property
+    def const_result(self):
         return self.number
     def __str__(self):
         return "Num({0})".format(self.number)

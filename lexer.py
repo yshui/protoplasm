@@ -8,11 +8,15 @@ reserved = {
    'while' : 'WHILE',
    'input' : 'INPUT',
    'print' : 'PRINT',
-   'do' : 'DO'
+   'do' : 'DO',
+   'for' : 'FOR',
+   'new' : 'NEW',
+   'true' : 'TRUE',
+   'false' : 'FALSE',
 }
 
 tokens = ['LPAREN', 'RPAREN', 'ASSIGN', 'NOT', 'PLUS', 'MINUS', 'MULTIPLY', 'DIVIDE', 'MODULO', 'AND', 'OR', 'EQ', 'NEQ',
-          'LT', 'LEQ', 'GT', 'GEQ', 'LBRACE', 'RBRACE', 'SEMICOLON', 'ID', 'NUMBER'] + list(reserved.values())
+          'LT', 'LEQ', 'GT', 'GEQ', 'LBRACE', 'RBRACE', 'SEMICOLON', 'ID', 'NUMBER', 'INC', 'DEC'] + list(reserved.values())
 
 t_PLUS    = r'\+'
 t_MINUS   = r'-'
@@ -34,6 +38,8 @@ t_GEQ = r'>='
 t_NOT = r'!'
 t_SEMICOLON = r';'
 t_ASSIGN = r'='
+t_INC = r'\+\+'
+t_DEC = r'--'
 
 def t_ID(t):
     r'[a-zA-Z_][a-zA-Z_0-9]*'

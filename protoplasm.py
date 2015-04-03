@@ -29,6 +29,7 @@ if __name__ == "__main__":
     #while changed:
     _, ir = transform.allocate(ir)
     _, ir = transform.jump_block_removal(ir)
+    _, ir = transform.branch_merge(ir)
     _, ir = transform.block_coalesce(ir)
 #    ir.allocate()
 #    print(ir)

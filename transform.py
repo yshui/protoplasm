@@ -25,6 +25,31 @@ def unset_log_phase():
     global myhdlr
     logger.removeHandler(myhdlr)
 
+def branch_merge(ir):
+    #if both target of a branch instruction is the same
+    #replace it with unconditional jump
+    set_log_phase("bm")
+    logging.info(ir)
+    nir = IR()
+    changed = False
+    for bb in ir.bb:
+        assert not bb.phis
+        if bb.br.tgt[1] != bb.br.tgt[0]:
+            nir += [BB(bb.name, bb)]
+            continue
+        if not bb.br.tgt[0]:
+            nir += [BB(bb.name, bb)]
+            continue
+        changed = True
+        logging.info(bb.br)
+        nxbb = BB(bb.name)
+        nxbb += bb.ins
+        nxbb += [Br(0, None, bb.br.tgt[0], None)]
+        nir += [nxbb]
+    nir.finish()
+    unset_log_phase()
+    return (changed, nir)
+
 def prune_unused(ir):
     set_log_phase("prune")
     logging.info(ir)
@@ -350,7 +375,6 @@ def allocate_bb(bb, bbmap):
             #more than one or none, reuse does not make sense
             reg, s, sm = R.get_may_spill(d)
             ret[d] = deque([reg])
-            logging.info("xxx%s -> %s" % (reg, d))
             if s:
                 ret[s].append(sm)
     bb.assign_out_reg(R)
