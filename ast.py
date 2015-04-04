@@ -109,20 +109,21 @@ class Asgn(Expr):
         self.emit(varv, ir)
         return self.rhs.const_result(varv, ir)
     def emit(self, varv, ir, dst=None):
-        if self.res:
-            return
-        self.rhs.emit(varv, ir, self.lhs.name)
-        self.res = varv.curr_ver(self.lhs.name)
+        if not self.res:
+            self.rhs.emit(varv, ir, self.lhs.name)
+            self.res = varv.curr_ver(self.lhs.name)
         if dst:
             dst = varv.next_ver(dst)
             bb = ir.last_bb
-            bb += [Arithm('+', dst, self.lhs.name, 0)]
+            if self.is_constant:
+                bb += [Load(dst, self.rhs.const_result(varv, ir))]
+            else :
+                bb += [Arithm('+', dst, self.res, 0)]
     def get_result(self, varv, ir, noconst=False):
         if self.is_constant and not noconst:
             return self.const_result(varv, ir)
-        else :
-            self.emit(varv, ir)
-            return self.res
+        self.emit(varv, ir)
+        return self.res
     def wellformed(self, defined):
         return self.rhs.wellformed(defined)
     def get_defined(self, either=False):
