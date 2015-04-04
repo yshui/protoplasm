@@ -20,6 +20,12 @@ class VarVer:
         assert name in self.d, name
         return "%"+name+"."+str(self.d[name])
 
+class Type:
+    pass
+class Array(Type):
+    def __init__(self, inner):
+        self.inner = inner
+
 class Expr:
     @property
     def is_constant(self):
@@ -50,7 +56,7 @@ class Expr:
                 return self.const_result(varv, ir)
         self.noconst_emit(varv, ir, 'tmp')
         return varv.curr_ver('tmp')
-    def get_defined(self):
+    def get_defined(self, _=False):
         return set()
 
 class Inc(Expr):
@@ -84,8 +90,8 @@ class Inc(Expr):
         return self.res
     def wellformed(self, dfn):
         self.lval.wellformed(dfn)
-    def get_defined(self):
-        return self.lval.get_defined()
+    def get_defined(self, either=False):
+        return self.lval.get_defined(either)
 
 class Asgn(Expr):
     def __str__(self):
@@ -119,8 +125,8 @@ class Asgn(Expr):
             return self.res
     def wellformed(self, defined):
         return self.rhs.wellformed(defined)
-    def get_defined(self):
-        return {self.lhs.name}|self.rhs.get_defined()
+    def get_defined(self, either=False):
+        return {self.lhs.name}|self.rhs.get_defined(either)
 
 class UOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -153,8 +159,8 @@ class UOP(Expr):
         self.linenum = linenum
     def wellformed(self, defined):
         return self.opr.wellformed(defined)
-    def get_defined(self):
-        return self.opr.get_defined()
+    def get_defined(self, either=False):
+        return self.opr.get_defined(either)
 
 class BinOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -168,8 +174,6 @@ class BinOP(Expr):
             rres = self.ropr.get_result(varv, ir)
             bb = ir.last_bb
             dst = varv.next_ver(dst)
-            print(lres)
-            print(rres)
             if self.op in arithm:
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
@@ -239,11 +243,13 @@ class BinOP(Expr):
         else :
             self.op = "//"
     def wellformed(self, defined):
-        print(self.lopr)
-        print(self.ropr)
         return self.lopr.wellformed(defined) and self.ropr.wellformed(defined)
-    def get_defined(self):
-        return self.lopr.get_defined()|self.ropr.get_defined()
+    def get_defined(self, either=False):
+        ldfn = self.lopr.get_defined(either)
+        rdfn = self.ropr.get_defined(either)
+        if self.op not in {'&&', '||'} or either:
+            return ldfn|rdfn
+        return ldfn
 
 class Var(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -267,7 +273,7 @@ class Var(Expr):
         return self.name.__hash__()
     def wellformed(self, defined):
         if self.name not in defined:
-            print("Variable {0} used at line {1}, but not defined".format(self.name, self.linenum))
+            logging.error("Variable {0} used at line {1}, but not defined".format(self.name, self.linenum))
             return False
         return True
 
@@ -308,7 +314,7 @@ class Inpt:
         return varv.curr_ver('tmp')
     def wellformed(self, defined):
         return True
-    def get_defined(self):
+    def get_defined(self, _=False):
         return set()
 
 class Prnt:
@@ -318,12 +324,11 @@ class Prnt:
         self.linenum = linenum
         self.expr = expr
     def emit(self, varv, ir):
-        print(self.expr)
         res = self.expr.get_result(varv, ir)
         bb = ir.last_bb
         bb += [IPrnt(res)]
-    def get_defined(self):
-        return self.expr.get_defined()
+    def get_defined(self, either=False):
+        return self.expr.get_defined(either)
     def wellformed(self, defined):
         return self.expr.wellformed(defined)
 
@@ -341,23 +346,24 @@ class If:
             res += '}'
         return res
     def emit(self, varv, ir):
-        tdfn = self.then.get_defined()
+        res = self.cond.get_result(varv, ir)
         pdfn = varv.get_dfn()
-        edfn = set()
+        tmod = self.then.get_defined(True)
+        emod = set()
         if self.e:
-            edfn = self.e.get_defined()
+            emod = self.e.get_defined(True)
+        mod = tmod|emod
 
         tbbname = ir.next_name()
         epname = ir.next_name()
         ebbname = ir.next_name()
-        res = self.cond.get_result(varv, ir)
         prologue = ir.last_bb
         if self.e :
             prologue += [Br(1, res, ebbname, tbbname)]
         else :
             prologue += [Br(1, res, epname, tbbname)]
         pmap = {}
-        for v in (tdfn|edfn)&pdfn:
+        for v in mod&pdfn:
             pmap[v] = varv.curr_ver(v)
 
         thenb = ir.append_bb(tbbname)
@@ -366,7 +372,7 @@ class If:
         thenb += [Br(0, None, epname, None)]
         #get last version
         thenmap = {}
-        for v in tdfn:
+        for v in tmod:
             thenmap[v] = varv.curr_ver(v)
 
         elsemap = {}
@@ -375,7 +381,7 @@ class If:
             self.e.emit(varv, ir)
             elseb = ir.last_bb
             elseb += [Br(0, None, epname, None)]
-            for v in edfn:
+            for v in emod:
                 elsemap[v] = varv.curr_ver(v)
 
         ep = ir.append_bb(epname)
@@ -383,11 +389,11 @@ class If:
         tgt2b = ""
         #Add phi nodes here
         #Unused phis will be removed later
-        for v in tdfn|edfn:
-            if v in tdfn :
+        for v in mod:
+            if v in tmod :
                 tgt1 = thenmap[v]
                 tgt1b = thenb.name
-                if v in edfn :
+                if v in emod :
                     tgt2 = elsemap[v]
                     tgt2b = elseb.name
                 elif v in pdfn:
@@ -395,7 +401,7 @@ class If:
                     tgt2b = prologue.name
                 else :
                     continue
-            elif v in edfn :
+            elif v in emod :
                 tgt2 = elsemap[v]
                 tgt2b = elseb.name
                 if v in pdfn :
@@ -407,68 +413,109 @@ class If:
             ep += [Phi(nv, tgt2b, tgt2, tgt1b, tgt1)]
 
     def wellformed(self, defined):
-        res = self.then.wellformed(defined)
-        if self.e :
-            res = res and self.e.wellformed(defined)
-        return res
-    def get_defined(self):
-        cond_dfn = self.cond.get_defined()
+        try :
+            assert self.cond.wellformed(defined)
+            defined = defined|self.cond.get_defined()
+            assert self.then.wellformed(defined)
+            if self.e :
+                assert self.e.wellformed(defined)
+        except AssertionError :
+            return False
+        return True
+    def get_defined(self, either=False):
+        cond_dfn = self.cond.get_defined(either)
         if not self.e :
             #in case the then branch is not run
+            if either :
+                return cond_dfn|self.then.get_defined(either)
             return cond_dfn
         #variables must be in both branch to be defined
-        td = self.then.get_defined()
-        te = self.e.get_defined()
+        td = self.then.get_defined(either)
+        te = self.e.get_defined(either)
+        if either :
+            return cond_dfn|td|te
         return (td&te)|cond_dfn
 
-class While:
-    def __init__(self, cond, do, linenum=0):
-        self.cond = cond
+class Loop:
+    def __init__(self, cond, do, pre=None, post=None, linenum=0):
+        #cond is (condition position, condition)
+        self.pre = pre
+        self.post = post
+        self.cond, self.cond_pos = cond
         self.do = do
         self.linenum = linenum
     def __str__(self):
-        return 'While('+str(self.cond)+')->'+str(self.do)
+        cp = ['Pre', 'Post']
+        return 'For(%s;%s<%s>;%s){%s}' % (self.pre, self.cond, cp[self.cond_pos], self.post, self.do)
     def emit(self, varv, ir):
+        #emit pre
+        if self.pre:
+            self.pre.emit(varv, ir)
+        pdfn = varv.get_dfn()
+        mod = self.do.get_defined(True)|self.cond.get_defined(True)
+        if self.post:
+            mod |= self.post.get_defined(True)
         before = ir.last_bb
-        prologue_name = ir.next_name()
-        before += [Br(0, None, prologue_name, None)]
-
-        prologue = ir.append_bb(prologue_name)
+        prname = ir.next_name()
         epname = ir.next_name()
         bname = ir.next_name()
+        prologue = None
+        body = None
+        lbname = None #loopback name
 
-        #emit placeholder phi nodes
-        #since we don't know the final
-        #variable name at the end of the loop
-        dfn = self.do.get_defined()
-        pdfn = varv.get_dfn()
-        phis = []
+        if self.cond_pos == 0:
+            before += [Br(0, None, prname, None)]
+        else :
+            before += [Br(0, None, bname, None)]
+
+        old_var = {}
+        lb_var = {}
         var_phi = {}
-        for v in dfn&pdfn:
-            oldv = varv.curr_ver(v)
-            nv = varv.next_ver(v)
-            var_phi[v] = nv
-            i = Phi(nv, before.name, oldv, bname, "%"+v)
+        for v in mod&pdfn:
+            old_var[v] = varv.curr_ver(v)
+            var_phi[v] = varv.next_ver(v)
+
+        def emit_prologue(is_end):
+            nonlocal prname, ir, lb_var, lbname, varv, prologue
+            prologue = ir.append_bb(prname)
+            res = self.cond.get_result(varv, ir)
+            prologue_end = ir.last_bb
+            prologue_end += [Br(1, res, epname, bname)]
+            if is_end:
+                lbname = prologue_end.name
+                for v in mod&pdfn:
+                    lb_var[v] = varv.curr_ver(v)
+
+        def emit_body(is_end):
+            nonlocal bname, ir, lb_var, lbname, varv, body
+            body = ir.append_bb(bname)
+            bname = body.name
+            self.do.emit(varv, ir)
+            if self.post:
+                self.post.emit(varv, ir)
+            body_end = ir.last_bb
+            body_end += [Br(0, None, prname, None)]
+            if is_end:
+                lbname = body_end.name
+                for v in mod&pdfn:
+                    lb_var[v] = varv.curr_ver(v)
+
+        if self.cond_pos == 0: #pre
+            emit_prologue(False)
+            emit_body(True)
+        else :
+            emit_body(False)
+            emit_prologue(True)
+
+        phis = []
+        for v in mod&pdfn:
+            i = Phi(var_phi[v], before.name, old_var[v], lbname, lb_var[v])
             phis.append(i)
-        prologue += phis
 
-        res = self.cond.get_result(varv, ir)
-        prologue = ir.last_bb
-        prologue += [Br(1, res, epname, bname)]
-
-        body = ir.append_bb(bname)
-        bname = body.name
-        self.do.emit(varv, ir)
-
-        #replace the names in phi nodes
-        body = ir.last_bb
-        body += [Br(0, None, prologue_name, None)]
-
-        #replace placeholder name with real names
-        for i in phis:
-            v = i.srcs[bname].val
-            i.del_source(bname)
-            i.set_source(body.name, varv.curr_ver(v))
+        if self.cond_pos == 0:
+            prologue.phis = phis
+        else :
+            body.phis = phis
 
         epilogue = ir.append_bb(epname)
         for v in var_phi:
@@ -476,11 +523,35 @@ class While:
             epilogue += [Arithm('+', dst, var_phi[v], 0)]
 
     def wellformed(self, defined):
-        return self.do.wellformed(defined)
-    def get_defined(self):
+        try :
+            if self.pre:
+                assert self.pre.wellformed(defined)
+                defined = defined|self.pre.get_defined()
+            if self.cond_pos == 0:
+                assert self.cond.wellformed(defined)
+                defined = defined|self.cond.get_defined()
+            assert self.do.wellformed(defined)
+            defined = defined|self.do.get_defined()
+            if self.post:
+                assert self.post.wellformed(defined)
+                defined = defined|self.post.get_defined()
+            if self.cond_pos == 1:
+                assert self.cond.wellformed(defined)
+        except AssertionError :
+            return False
+        return True
+    def get_defined(self, either=False):
         #if a loop is not run, nothing is defined
         #so defined is only what defined in the condition
-        return self.cond.get_defined()
+        res = self.cond.get_defined(either)
+        if self.cond_pos == 1 or either: #post
+            #loop well run at least once
+            res = res|self.do.get_defined(either)
+            if self.post:
+                res = res|self.post.get_defined(either)
+        if self.pre :
+            res = res|self.pre.get_defined(either)
+        return res
 
 class Block:
     def emit(self, varv, ir):
@@ -499,10 +570,10 @@ class Block:
                 return False
             defined |= w.get_defined()
         return True
-    def get_defined(self):
+    def get_defined(self, either=False):
         defined = set()
         for w in self.expr_list:
-            defined |= w.get_defined()
+            defined |= w.get_defined(either)
         return defined
     def __init__(self, elist, linenum=0):
         self.expr_list = elist

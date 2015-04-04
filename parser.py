@@ -1,9 +1,10 @@
 import ply.yacc as yacc
-from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, While, UOP, Inc
+from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc
 from lexer import tokens
 import sys
 import logging
 precedence = (
+    ('right', 'ASSIGN'),
     ('left', 'OR'),
     ('left', 'AND'),
     ('nonassoc', 'EQ', 'LEQ', 'GEQ', 'LT', 'GT', 'NEQ'),
@@ -31,7 +32,7 @@ def p_stmt(p):
             | print SEMICOLON
             | block
             | if
-            | while
+            | loop
     '''
     p[0] = p[1]
 
@@ -77,8 +78,16 @@ def p_if(p):
         p[0] = If(p[2], p[4], None, p.lineno(1))
 
 def p_while(p):
-    'while : WHILE expr DO stmt'
-    p[0] = While(p[2], p[4], p.lineno(1))
+    'loop : WHILE expr DO stmt'
+    p[0] = Loop((p[2], 0), p[4], linenum=p.lineno(1))
+
+def p_do_while(p):
+    'loop : DO stmt WHILE expr SEMICOLON'
+    p[0] = Loop((p[4], 1), p[2], linenum=p.lineno(1))
+
+def p_for(p):
+    'loop : FOR LPAREN assign SEMICOLON expr SEMICOLON assign RPAREN stmt'
+    p[0] = Loop((p[5], 0), p[9], pre=p[3], post=p[7], linenum=p.lineno(1))
 
 def p_expr_binop(p):
     '''expr : expr PLUS expr

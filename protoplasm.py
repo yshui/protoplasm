@@ -16,7 +16,11 @@ if __name__ == "__main__":
     res = parser.parse(f.read(), debug=logger)
     logger.setLevel(logging.INFO)
     logging.info(res)
-    logging.info(res.wellformed(set()))
+    wf = res.wellformed(set())
+    logging.info(wf)
+    if not wf:
+        logging.error("Program not wellformed")
+        sys.exit(1)
     ir = IR()
     ir.append_bb(None)
     varv = VarVer()
