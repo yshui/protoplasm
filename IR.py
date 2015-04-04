@@ -75,7 +75,7 @@ class Register(BassOpr):
     def get_used(self):
         return set()
     def allocate(self, _):
-        assert False, "Cannot allocate register for a register"
+        assert False, "Cannot allocate register for a register", self
 
 class Imm(BassOpr):
     def __init__(self, number):

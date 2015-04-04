@@ -385,32 +385,29 @@ class If:
                 elsemap[v] = varv.curr_ver(v)
 
         ep = ir.append_bb(epname)
-        tgt1b = ""
-        tgt2b = ""
+        if self.e:
+            tgt2b = elseb.name
+        else :
+            tgt2b = prologue.name
         #Add phi nodes here
         #Unused phis will be removed later
         for v in mod:
             if v in tmod :
                 tgt1 = thenmap[v]
-                tgt1b = thenb.name
                 if v in emod :
                     tgt2 = elsemap[v]
-                    tgt2b = elseb.name
                 elif v in pdfn:
                     tgt2 = pmap[v]
-                    tgt2b = prologue.name
                 else :
                     continue
             elif v in emod :
                 tgt2 = elsemap[v]
-                tgt2b = elseb.name
                 if v in pdfn :
                     tgt1 = pmap[v]
-                    tgt1b = prologue.name
                 else :
                     continue
             nv = varv.next_ver(v)
-            ep += [Phi(nv, tgt2b, tgt2, tgt1b, tgt1)]
+            ep += [Phi(nv, tgt2b, tgt2, thenb.name, tgt1)]
 
     def wellformed(self, defined):
         try :
