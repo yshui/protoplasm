@@ -89,9 +89,9 @@ class Inc(Expr):
         self.emit(varv, ir)
         return self.res
     def wellformed(self, dfn):
-        self.lval.wellformed(dfn)
+        return self.lval.wellformed(dfn)
     def get_defined(self, either=False):
-        return self.lval.get_defined(either)
+        return {self.lval.name}
 
 class Asgn(Expr):
     def __str__(self):
