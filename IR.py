@@ -432,6 +432,13 @@ def move_or_store(src, dst):
     else :
         return "\tsw "+str(src)+", "+dst.get_offset()+"($sp)\n"
 
+def get_stack_usage(ins):
+    if isinstance(ins, Load) and ins.m.is_mem:
+        return ins.m.val
+    if isinstance(ins, Store):
+        return ins.dst.val
+    return -1
+
 class Load(NIns):
     def __init__(self, dst, m):
         if isinstance(m, int):
@@ -545,6 +552,7 @@ class BB:
         self.out_reg = {}
         self.required = set()
         self.dombb = set()
+        self.stack_top = 0
         if bb:
             self += bb.phis
             self += bb.ins
@@ -602,6 +610,9 @@ class BB:
         while ins:
             assert not self.br, "Appending instruction after end of BB %s" % self
             i = ins.pop(0)
+            stk = get_stack_usage(i)
+            if stk >= self.stack_top:
+                self.stack_top = stk+1
             if i.is_phi:
                 if self.ins:
                     raise Exception("Phi instructions in the middle of a BB")
@@ -677,12 +688,15 @@ class IR:
             self.bb = []
         self.bbmap = {}
         self.namecnt = 0
+        self.stack_top = 0
 
     def __iadd__(self, o):
         for i in o:
             assert i.name not in self.bbmap, "Basic blocks with duplicated name "+i.name+str(self.bbmap)
             self.bbmap[i.name] = i
             self.bb.append(i)
+            if i.stack_top > self.stack_top:
+                self.stack_top = i.stack_top
         return self
 
     def next_name(self):
@@ -736,6 +750,9 @@ class IR:
         f = open(fname, 'w')
         f.write(".data\nnl: .asciiz \"\\n\"\n")
         f.write(".text\nmain:\n")
+        #shift the stack pointer
+        if self.stack_top > 0:
+            f.write("\tsub $sp, $sp, %d\n" % (self.stack_top*4))
         numbb = len(self.bb)
         for n, bb in enumerate(self.bb):
             nextbb = None
