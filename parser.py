@@ -1,5 +1,5 @@
 import ply.yacc as yacc
-from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc
+from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc, Decl, Type
 from lexer import tokens
 import sys
 import logging
@@ -13,10 +13,46 @@ precedence = (
     ('right', 'NOT'),
     ('right', 'UMINUS'),
 )
-def p_top(p):
-    'top : stmt_list'
+
+def p_prgm(p):
+    'prgm : stmt_list'
     p[0] = p[1]
     p[0].is_top = True
+
+def p_empty(p):
+    'empty : '
+    p[0] = None
+
+def p_decl_list(p):
+    'decl_list : decl decl_list'
+    p[2].append(p[1])
+    p[0] = p[2]
+
+def p_decl_list_empty(p):
+    'decl_list : empty'
+    p[0] = []
+
+def p_type(p):
+    '''type : INT
+            | BOOL'''
+    p[0] = Type(p[1])
+
+def p_decl(p):
+    'decl : type var_list SEMICOLON'
+    p[0] = Decl(p[1], p[2])
+
+def p_var_list(p):
+    'var_list : var COMMA var_list'
+    p[3].append(p[1])
+    p[0] = p[3]
+
+def p_var_list_single(p):
+    'var_list : var'
+    p[0] = [p[1]]
+
+def p_var(p):
+    'var : ID'
+    p[0] = Var(p[1], p.lineno(1))
 
 def p_stmt_list_single(p):
     'stmt_list : stmt'
@@ -85,8 +121,13 @@ def p_do_while(p):
     'loop : DO stmt WHILE expr SEMICOLON'
     p[0] = Loop((p[4], 1), p[2], linenum=p.lineno(1))
 
+def p_assign_or_empty(p):
+    '''assign_or_empty : assign
+                       | empty '''
+    p[0] = p[1]
+
 def p_for(p):
-    'loop : FOR LPAREN assign SEMICOLON expr SEMICOLON assign RPAREN stmt'
+    'loop : FOR LPAREN assign_or_empty SEMICOLON expr SEMICOLON assign_or_empty RPAREN stmt'
     p[0] = Loop((p[5], 0), p[9], pre=p[3], post=p[7], linenum=p.lineno(1))
 
 def p_expr_binop(p):
@@ -109,6 +150,14 @@ def p_expr_binop(p):
 def p_expr_number(p):
     'expr : NUMBER'
     p[0] = Num(p[1], p.lineno(1))
+
+def p_expr_bool(p):
+    '''expr : FALSE
+            | TRUE'''
+    if p[1] == 'true':
+        p[0] = Num(1, p.lineno(1))
+    else :
+        p[0] = Num(0, p.lineno(1))
 
 def p_expr_paren(p):
     'expr : LPAREN expr RPAREN'

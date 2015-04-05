@@ -21,10 +21,16 @@ class VarVer:
         return "%"+name+"."+str(self.d[name])
 
 class Type:
-    pass
+    def __init__(self, name):
+        self.name = name
 class Array(Type):
     def __init__(self, inner):
         self.inner = inner
+
+class Decl:
+    def __init__(self, t, vlist):
+        self.vlist = vlist
+        self.t = t
 
 class Expr:
     @property
