@@ -18,7 +18,7 @@ reserved = {
 }
 
 tokens = ['LPAREN', 'RPAREN', 'ASSIGN', 'NOT', 'PLUS', 'MINUS', 'MULTIPLY', 'DIVIDE', 'MODULO', 'AND', 'OR', 'EQ', 'NEQ',
-          'LT', 'LEQ', 'GT', 'GEQ', 'LBRACE', 'RBRACE', 'SEMICOLON', 'ID', 'NUMBER', 'INC', 'DEC', 'COMMA'] + list(reserved.values())
+          'LT', 'LEQ', 'GT', 'GEQ', 'LBRACE', 'RBRACE', 'SEMICOLON', 'ID', 'NUMBER', 'INC', 'DEC', 'COMMA', 'LBRACKET', 'RBRACKET'] + list(reserved.values())
 
 t_PLUS    = r'\+'
 t_MINUS   = r'-'
@@ -28,6 +28,8 @@ t_LPAREN  = r'\('
 t_RPAREN  = r'\)'
 t_LBRACE = r'{'
 t_RBRACE = r'}'
+t_LBRACKET = r'\['
+t_RBRACKET = r'\]'
 t_MODULO = r'%'
 t_AND = r'&&'
 t_OR = r'\|\|'

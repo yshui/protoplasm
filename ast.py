@@ -1,4 +1,4 @@
-from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret
+from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, Malloc, Store, Cell
 import copy
 import logging
 
@@ -119,6 +119,12 @@ class Decl:
         self.vlist = vlist
         self.t = t
 
+class Dim:
+    def __init__(self, size, star):
+        self.size = size
+        assert isinstance(star, int)
+        self.star = star
+
 class Expr:
     @property
     def is_constant(self):
@@ -151,6 +157,31 @@ class Expr:
         return varv.curr_ver(0)
     def get_modified(self, _=False):
         return set()
+
+class New(Expr):
+    def __init__(self, t, dim):
+        self.t = t
+        self.dim = dim
+    @property
+    def is_constant(self):
+        return False
+    def noconst_emit(self, st, ir, dst):
+        res = self.dim.size.get_result(st, ir, True)
+        ndst = st.next_ver(dst)
+        bb = ir.last_bb
+        #calc (size+1) and (size+1)*4
+        szp1 = st.next_ver(0)
+        szp1m4 = st.next_ver(0)
+        bb += [Arithm('+', szp1, res, 1), Arithm('*', szp1m4, szp1, 4)]
+        bb += [Malloc(ndst, szp1m4)]
+        #store the size of the array
+        print(ndst)
+        print(type(ndst))
+        bb += [Store(Cell(0, base=ndst), res)]
+    def wellformed(self, st, defined):
+        return self.dim.size.wellformed(st, defined)
+    def get_modified(self, either):
+        return self.dim.size.get_modified(either)
 
 class Inc(Expr):
     def __init__(self, lval, pos, op):

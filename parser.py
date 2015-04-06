@@ -1,5 +1,5 @@
 import ply.yacc as yacc
-from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc, Decl, Type
+from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc, Decl, Type, Dim, New
 from lexer import tokens
 import sys
 import logging
@@ -179,6 +179,23 @@ def p_expr_uop(p):
 def p_expr_input(p):
     'expr : INPUT LPAREN RPAREN'
     p[0] = Inpt(p.lineno(1))
+
+def p_dim(p):
+    'dim : LBRACKET expr RBRACKET'
+    p[0] = Dim(p[2], 0)
+
+def p_dimstar(p):
+    'dimstar : dimstar LBRACKET RBRACKET'
+    p[0] = p[1]+1
+
+def p_dimstar_empty(p):
+    'dimstar : empty'
+    p[0] = 0
+
+def p_expr_new(p):
+    'expr : NEW type dim dimstar'
+    p[3].star = p[4]
+    p[0] = New(p[2], p[3])
 
 def p_error(p):
     raise Exception("Syntax error, unexpected '{0}' at line {1}".format(p.value, p.lineno))

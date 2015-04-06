@@ -37,28 +37,36 @@ class BassOpr:
         return False
 
 class Cell(BassOpr):
-    def __init__(self, val, var=None):
-        self.val = val
+    def __init__(self, off, base=None, var=None):
+        if not base:
+            self.base = Register("sp")
+        else :
+            self.base = get_operand(base)
+        assert self.base.is_reg or self.base.is_var
+        self.off = off
+        assert isinstance(off, int)
         self.xvar = var
     def __eq__(self, other):
         if not isinstance(other, Cell):
             return False
-        return self.val == other.val
+        return self.off == other.off and self.base == other.base
     def validate(self, dfn):
         return True
     def get_dfn(self):
         return set()
     def __str__(self):
-        return "("+str(self.val)+")"
+        return "%d(%s)" % (self.off, self.base)
     def get_used(self):
-        return set()
-    def get_offset(self):
-        return str(self.val*4)
-    def allocate(self, _):
-        assert False, "Cannot allocate register for a cell"
+        return self.base.get_used()
+    def allocate(self, regmap):
+        #allocate register for base
+        nbase = self.base.allocate(regmap)
+        return Cell(self.off, base=nbase)
 
 class Register(BassOpr):
     def __eq__(self, other):
+        if not isinstance(other, Register):
+            return False
         return other.val == self.val
     def __hash__(self):
         return str(self).__hash__()
@@ -264,13 +272,8 @@ class IInpt(NIns):
           assert self.dst.is_reg
           out += "\tadd %s, $v0, 0\n" % str(self.dst)
       return out
-    @property
-    def used(self):
-        if not self.dst.is_nil:
-            return self.dst.used
-        return True
     def __str__(self):
-        return "%s = input " % self.dst
+      return "%s = input " % self.dst
 
 class IPrnt(NIns):
     def __init__(self, var):
@@ -285,9 +288,6 @@ class IPrnt(NIns):
         return "print %s" % self.var
     def get_used(self):
         return self.var.get_used()
-    @property
-    def used(self):
-        return True
     def gencode(self):
         out = ""
         if self.var.is_reg:
@@ -386,7 +386,7 @@ class Br(BaseIns):
                 return "\tb "+self.tgt[0]+"\n"
             else :
                 return ""
-        assert self.src.is_reg
+        assert self.src.is_reg, self
         res = "\t%s %s, %s\n" % (self.brname[self.op], self.src, self.tgt[0])
         if self.tgt[1] != nextbb:
             res += ("\tb %s\n" % self.tgt[1])
@@ -440,6 +440,11 @@ class Phi:
             res += "[ %s: %s ], " % (x, y)
         return res[:-2]
 
+def is_stack_pointer(r):
+    if not r.is_reg:
+        return False
+    return r.val == "sp"
+
 def load_or_move(src, dst):
     assert dst.is_reg
     if src.is_imm:
@@ -447,20 +452,20 @@ def load_or_move(src, dst):
     elif src.is_reg:
         return "\tadd %s, %s, 0\n" % (str(dst), str(src))
     else :
-        return "\tlw %s, %s($sp)\n" % (str(dst), src.get_offset())
+        return "\tlw %s, %s\n" % (str(dst), src)
 
 def move_or_store(src, dst):
     assert src.is_reg
     if dst.is_reg:
-        return "\tadd %s, %s, 0\n" % (str(dst), str(src))
+        return "\tadd %s, %s, 0\n" % (dst, src)
     else :
-        return "\tsw "+str(src)+", "+dst.get_offset()+"($sp)\n"
+        return "\tsw %s, %s\n" % (src, dst)
 
 def get_stack_usage(ins):
-    if isinstance(ins, Load) and ins.m.is_mem:
-        return ins.m.val
-    if isinstance(ins, Store):
-        return ins.dst.val
+    if isinstance(ins, Load) and ins.m.is_mem and is_stack_pointer(ins.m.base):
+        return ins.m.off
+    if isinstance(ins, Store) and is_stack_pointer(ins.dst.base):
+        return ins.dst.off
     return -1
 
 class Load(NIns):
@@ -487,7 +492,10 @@ class Store(NIns):
         self.dst = get_operand(dst)
         assert self.dst.is_mem
         self.r = get_operand(r)
-        assert self.r.is_reg
+        assert self.r.is_reg or self.r.is_var
+    def allocate(self, regmap):
+        self.r = self.r.allocate(regmap)
+        self.dst = self.dst.allocate(regmap)
     def gencode(self):
         return move_or_store(self.r, self.dst)
     def validate(self, dfn):
@@ -499,10 +507,13 @@ class Store(NIns):
 
 class Malloc(NIns):
     def __init__(self, dst, size):
-        self.dst = get_operand(dst)
+        self.dst = get_operand(dst, True)
         assert self.dst.is_var or self.dst.is_reg
         self.size = get_operand(size)
         assert not self.size.is_mem
+    def allocate(self, regmap):
+        self.dst = self.dst.allocate(regmap)
+        self.size = self.size.allocate(regmap)
     def validate(self, dfn):
         self.dst.validate(dfn)
         self.size.validate(dfn)
@@ -516,15 +527,13 @@ class Malloc(NIns):
     def gencode(self):
         res = "\tli $v0, 9\n"
         if self.size.is_imm:
-            res += "\tli $a0, %d\n" % (self.size.val+1)
-            s = str(self.size.val+1)
+            res += "\tli $a0, %d\n" % (self.size.val)
         else :
             assert self.size.is_reg
-            res += "\tadd $a0, %s, 4\n" % (self.size)
-            s = str(self.size)
+            res += "\tadd $a0, %s, 0\n" % (self.size)
         res += "\tsyscall\n"
         assert self.dst.is_reg
-        res += "\tadd %s, $v0, 0" % (self.dst)
+        res += "\tadd %s, $v0, 0\n" % (self.dst)
         return res
 
 class Ret:
@@ -662,7 +671,7 @@ class BB:
             i = ins.pop(0)
             stk = get_stack_usage(i)
             if stk >= self.stack_top:
-                self.stack_top = stk+1
+                self.stack_top = stk+4
             if i.is_phi:
                 if self.ins:
                     raise Exception("Phi instructions in the middle of a BB")
@@ -802,7 +811,7 @@ class IR:
         f.write(".text\nmain:\n")
         #shift the stack pointer
         if self.stack_top > 0:
-            f.write("\tsub $sp, $sp, %d\n" % (self.stack_top*4))
+            f.write("\tsub $sp, $sp, %d\n" % (self.stack_top))
         numbb = len(self.bb)
         for n, bb in enumerate(self.bb):
             nextbb = None

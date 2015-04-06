@@ -1,4 +1,4 @@
-from IR import Cell, Var, Register, Load, Store, all_reg
+from IR import Cell, Var, Register, Load, Store, all_reg, is_stack_pointer
 from collections import OrderedDict
 from utils import _str_dict
 import logging
@@ -117,7 +117,9 @@ class Memory:
         self.mvmap = {}
     def __contains__(self, other):
         if other.is_mem:
-            return other.val in self.mvmap
+            assert other.off%4 == 0
+            assert other.base.val == "sp"
+            return other.off//4 in self.mvmap
         elif other.is_var:
             return other in self.vmmap
         return False
@@ -132,11 +134,13 @@ class Memory:
     def reserve(self, var, pos):
         logging.debug("Reserve %s -> %s" % (var, pos))
         assert pos.is_mem
-        assert pos.val not in self.mvmap, "%s %s %s" % (var, pos, self.mvmap[pos.val])
+        assert pos.off % 4==0
+        assert is_stack_pointer(pos.base)
+        pos = pos.off//4
+        assert pos not in self.mvmap, "%s %s %s" % (var, pos, self.mvmap[pos])
         var = Var(var.val)
-        self.vmmap[var] = Cell(pos.val)
-        self.mvmap[pos.val] = var
-        pos = pos.val
+        self.vmmap[var] = Cell(pos*4)
+        self.mvmap[pos] = var
         if pos < self.top:
             assert pos in self.avail
             self.avail -= {pos}
@@ -147,19 +151,19 @@ class Memory:
             return (True, self.vmmap[var])
         var = Var(var.val)
         if self.avail:
-            self.vmmap[var] = Cell(self.avail.pop(), var)
+            self.vmmap[var] = Cell(self.avail.pop()*4, var=var)
         else :
             while self.top in self.rsrv:
                 self.rsrv -= {self.top}
                 self.top += 1
-            self.vmmap[var] = Cell(self.top, var)
+            self.vmmap[var] = Cell(self.top*4, var=var)
             self.top += 1
-        self.mvmap[self.vmmap[var].val] = var
+        self.mvmap[self.vmmap[var].off//4] = var
         return (False, self.vmmap[var])
     def _dropv(self, var):
         if var not in self.vmmap:
             return
-        pos = self.vmmap[var].val
+        pos = self.vmmap[var].off//4
         del self.vmmap[var]
         del self.mvmap[pos]
         if pos in self.rsrv:
@@ -171,9 +175,11 @@ class Memory:
         self.avail |= {pos}
     def drop(self, o):
         if o.is_mem:
-            if o.val not in self.mvmap:
+            assert is_stack_pointer(o.base)
+            assert o.off%4 == 0
+            if o.off//4 not in self.mvmap:
                 return
-            self._dropv(self.mvmap[o.val])
+            self._dropv(self.mvmap[o.off//4])
         elif o.is_var:
             self._dropv(o)
         else :
