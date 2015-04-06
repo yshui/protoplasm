@@ -341,6 +341,15 @@ class Br(BaseIns):
         self.is_br = True
         self.is_phi = False
         self.used = True
+        if src is not None and self.src.is_imm:
+            #static branch
+            self.op = 0
+            bv = self.src.val
+            self.src = Nil()
+            if (bv == 0 and op == 1) or (bv != 0 and op == 2):
+                self.tgt = [target, None]
+            else :
+                self.tgt = [target2, None]
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
