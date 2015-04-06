@@ -59,6 +59,9 @@ def prune_unused(ir):
     #instructions doesn't produce a result is a *real* use of its operands
     #then we do reachability test from there
     for bb in ir.bb:
+        if not bb.preds and bb != ir.bb[0]:
+            logging.info("BB %s unreachable" % bb.name)
+            continue
         for i in bb.phis+bb.ins+[bb.br]:
             ds = i.get_dfn()
             if not ds:
@@ -81,6 +84,8 @@ def prune_unused(ir):
     nir = IR()
     changed = False
     for bb in ir.bb:
+        if not bb.preds and bb != ir.bb[0]:
+            continue
         nbb = BB(bb.name)
         for i in bb.phis+bb.ins:
             ds = i.get_dfn()
@@ -279,6 +284,7 @@ def allocate_bb(bb, bbmap):
             if vreg.is_reg:
                 R.reserve(v, vreg)
             else :
+                print(only_pred)
                 M.reserve(v, vreg)
     else :
         M2 = Memory()
@@ -603,7 +609,10 @@ def gen_phi_block(bb, sbb, prmap):
     for i in sbb.phis:
         dst = i.dst
         dreg = prmap[dst]
+        logging.debug("PHI dst %s: %s" %(dst, dreg))
         src = i.srcs[bb.name]
+        if dreg.is_mem:
+            a_mem -= {dreg.val}
         if src.is_imm:
             continue
         sreg = bb.out_reg[src]
@@ -621,8 +630,6 @@ def gen_phi_block(bb, sbb, prmap):
             src_reg[src] = sreg
             dsmap[sreg] = src
             nosrcreg -= {sreg}
-        if dreg.is_mem:
-            a_mem -= {dreg.val}
         if sreg == dreg:
             if dreg.is_mem:
                 del dsmap[sreg.val]
@@ -630,6 +637,7 @@ def gen_phi_block(bb, sbb, prmap):
                 del dsmap[sreg]
             src_rcv[src] -= {dst}
             continue
+    logging.info("Memory not used by any dst or src: %s" % a_mem)
 
     #calculate free registers
     phiregs = set([prmap[i.dst] for i in sbb.phis if prmap[i.dst].is_reg])
@@ -650,18 +658,20 @@ def gen_phi_block(bb, sbb, prmap):
         dreg = prmap[i.dst]
         if dreg.is_mem:
             tmpreg = True
-        immmap[src.val] |= {i.dst.val}
+        immmap[src.val] |= {i.dst}
     popcell = None
     if nosrcreg:
         tmpreg = next(iter(nosrcreg)) #we have a free reg, grab it any way
+        logging.info("Use %s for imm store" % tmpreg)
     elif tmpreg:
         popcell = Cell(next(iter(a_mem)))
         tmpreg = next(iter(all_reg))
+        logging.info("Use %s for imm store, but back it up at %s" % (tmpreg, popcell))
         s0ins.append(Store(popcell, tmpreg))
     for val in immmap:
         reg_set = False
         for dst in immmap[val]:
-            dreg = prmap[i.dst]
+            dreg = prmap[dst]
             if dreg.is_reg:
                 s0ins.append(Load(dreg, val))
             else :
@@ -767,7 +777,7 @@ def gen_phi_block(bb, sbb, prmap):
     logging.info("First phase done")
     while todo:
         #pick any src, load it, do all the valid moves, store it somewhere else
-        #first see it we can find any src of whom all moves are valid
+        #first see if we can find any src of whom all moves are valid
         to_promote = None
         for src in todo:
             flag = True
@@ -787,16 +797,17 @@ def gen_phi_block(bb, sbb, prmap):
                     to_promote = src
                     break
         assert to_promote
-        logging.info("promoting %s to resolve conflicts" % to_promote)
         _set_print(src_rcv[to_promote])
         pmem = src_mem[to_promote]
         assert pmem, to_promote
         resolve_ins.append(Load(tmpreg, pmem))
+        logging.info("promoting %s->%s to resolve conflicts" % (to_promote, tmpreg))
         done = set()
         for dst in src_rcv[to_promote]:
             dmem = prmap[dst]
             if dmem.val in dsmap:
                 continue
+            logging.info("Storing %s(%s)->%s" % (tmpreg, to_promote, dmem))
             resolve_ins.append(Store(dmem, tmpreg))
             done |= {dst}
         src_rcv[to_promote] -= done
@@ -805,12 +816,14 @@ def gen_phi_block(bb, sbb, prmap):
         if not src_rcv[to_promote]:
             #this to_promote is selected in first step
             #so no need to store it again
+            logging.info("%s is done" % (to_promote))
             todo -= {to_promote}
         else :
             #this to_promote is in dsmap
             #so store it to a new place to resolve conflict
             mcell = Cell(a_mem.pop())
             src_mem[to_promote] = mcell
+            logging.info("%s still have left overs, storing to %s" %(to_promote, mcell))
             resolve_ins.append(Store(mcell, tmpreg))
         pairs = [1]
         while bool(pairs):
@@ -820,9 +833,12 @@ def gen_phi_block(bb, sbb, prmap):
                     continue
                 for dst in src_rcv[src]:
                     if prmap[dst].val not in dsmap:
+                        logging.info("New possible move %s(%s)->%s(%s)" % (src, src_reg[src], dst, prmap[dst]))
                         pairs.append((src, dst))
             for src, dst in pairs:
                 logging.info("reg to mem(%s, %s)" % (src,dst))
+                if src_reg[src] == tmpreg:
+                    s2ins.append(Load(tmpreg, popcell))
                 s2ins.append(Store(prmap[dst], src_reg[src]))
                 src_rcv[src] -= {dst}
                 if not src_rcv[src]:
