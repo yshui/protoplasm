@@ -1,4 +1,4 @@
-from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, IPrnt, Load, Store, Br, Register, all_reg
+from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, IPrnt, Load, Store, Br, Rename, Register, all_reg
 from collections import deque
 from utils import _set_print, _dict_print, _str_dict, _str_set, link, get_father
 from storage_models import Memory, Registers
@@ -178,8 +178,8 @@ def block_coalesce(ir):
         logging.info("Block coalesce done, no changes")
     unset_log_phase()
     return (bool(removed), nir)
-def chain_breaker(ir):
-    set_log_phase("chain")
+def variable_rename(ir):
+    set_log_phase("rename")
     logging.info(ir)
     nir = IR()
     changed = False
@@ -252,7 +252,9 @@ def chain_breaker(ir):
                 vname = str(v)
                 if v in pred.In:
                     vname += "."+pred.name
-                nbb += [Arithm('+', str(v)+"."+bb.name, vname, 0)]
+                i = Rename(str(v)+"."+bb.name, vname)
+                nbb += [i]
+                varmap[v] = Var(i.dst.val)
         if bb.br:
             nbr = copy.copy(bb.br)
             nbr.allocate(varmap)
@@ -261,7 +263,7 @@ def chain_breaker(ir):
     nir.finish()
     logging.debug(nir)
     for bb in nir.bb:
-        assert not bb.In or len(bb.preds) == 1
+        assert not bb.In or len(bb.preds) == 1, "%s %s %s" % (_str_set(bb.In), _str_set(bb.preds), bb)
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
     unset_log_phase()
     return (changed, nir)
@@ -348,6 +350,19 @@ def allocate_bb(bb, bbmap):
     _set_print(bb.In)
     for i in bb.ins+[bb.br]:
         if i.is_phi:
+            continue
+        if isinstance(i, Rename):
+            #rename instruction, simply change the mapping
+            assert {i.src} == i.last_use #make sure the renamed variable is not used afterwards
+            logging.info("Handling rename %s" % i)
+            if i.src in R.M:
+                _, s = R.M.get(i.src)
+            else :
+                assert i.src in R
+                s = R.get(i.src)
+            R.drop_both(i.src)
+            R.reserve(i.dst, s)
+            ret[i.dst] = deque([])
             continue
         logging.debug(i)
         ds = i.get_dfn()
@@ -485,8 +500,20 @@ def allocate(ir):
                 R.reserve(v, reg)
         for i in bb.ins+[bb.br]:
             logging.info(i)
+            if isinstance(i, Rename):
+                logging.info("Update mapping for %s" % i)
+                if i.src in R.M:
+                    _, s = R.M.get(i.src)
+                else :
+                    assert i.src in R
+                    s = R.get(i.src)
+                R.drop_both(i.src)
+                logging.info("%s->%s" % (i.dst, s))
+                R.reserve(i.dst, s)
+                continue
             ni = copy.copy(i)
-            u = ni.get_used()
+            u = i.get_used()
+            logging.info("Used set: %s" % _str_set(u))
             vrmap2 = {}
             for v in u:
                 nbb += promote_replay(v, R, allocation[bb])

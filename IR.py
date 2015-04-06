@@ -173,6 +173,25 @@ class NIns(BaseIns):
     def get_dfn(self):
         return self.dst.get_dfn()
 
+class Rename(NIns):
+    def __init__(self, dst, src):
+        self.dst = get_operand(dst, True)
+        self.src = get_operand(src)
+        assert self.src.is_var, src
+        assert self.dst.is_var, dst
+    def get_used(self):
+        return self.src.get_used()
+    def gencode(self):
+        assert False
+    def allocate(self):
+        assert False
+    def validate(self, dfn):
+        self.dst.validate(dfn)
+        self.src.validate(dfn)
+    def __str__(self):
+        return "%s = rename %s" % (self.dst, self.src)
+
+
 class Arithm(NIns):
     opc = {"+": 1, "-": 2, "*": 3, "//": 4, "%": 5, "&": 6, "|": 7}
     opname = {

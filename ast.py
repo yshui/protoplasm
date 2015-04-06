@@ -219,7 +219,7 @@ class Asgn(Expr):
         return self.res
     def wellformed(self, st, defined):
         if self.lhs.name not in st:
-            logging.error("Variable %s used but not declared, at line %d" % (self.lhs.name, self.linenum))
+            logging.error("Undeclared variable '%s' used at line %d" % (self.lhs.name, self.linenum))
             logging.error(self)
             return False
         return self.rhs.wellformed(st, defined)
@@ -371,10 +371,10 @@ class Var(Expr):
         return self.name.__hash__()
     def wellformed(self, st, defined):
         if self.name not in st:
-            logging.error("Undeclared variable %s used at line %d" % (self.name, self.linenum))
+            logging.error("Undeclared variable '%s' used at line %d" % (self.name, self.linenum))
             return False
         if self.name not in defined:
-            logging.error("Variable {0} used before initialization, at line {1}".format(self.name, self.linenum))
+            logging.error("Variable '{0}' used before initialization, at line {1}".format(self.name, self.linenum))
             return False
         return True
 
