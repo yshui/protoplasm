@@ -478,26 +478,26 @@ def allocate(ir):
                 reg = bballoc[v].popleft()
                 R.reserve(v, reg)
         for i in bb.ins+[bb.br]:
+            logging.info(i)
             ni = copy.copy(i)
             u = ni.get_used()
+            vrmap2 = {}
             for v in u:
                 nbb += promote_replay(v, R, allocation[bb])
-            vrmap2 = {}
+                vrmap2[v] = R.vrmap[v] #save the allocation
             for v in i.last_use:
                 assert v not in allocation or not allocation[v]
                 logging.info("Last use: %s" % v)
-                vrmap2[v] = R.vrmap[v] #save the allocation
                 R.drop_both(v)
             ds = i.get_dfn()
             d, oldv, m = None, None, None
             if ds:
                 d, = ds
                 nbb += promote_replay(d, R, allocation[bb])
+            tmpvrmap = copy.copy(R.vrmap)
             for v in vrmap2:
-                R.vrmap[v] = vrmap2[v]
-            ni.allocate(R.vrmap)
-            for v in vrmap2:
-                del R.vrmap[v]
+                tmpvrmap[v] = vrmap2[v]
+            ni.allocate(tmpvrmap)
             if ni.is_br:
                 #if the branch instruction has a target
                 #change the target to point to the phi block
