@@ -4,7 +4,7 @@ from functools import reduce
 import logging
 
 usable_reg = []
-for __i in range(0, 2):
+for __i in range(0, 10):
     usable_reg += ["t{0}".format(__i)]
 def gen_rvmap(*arg):
     #res = ""

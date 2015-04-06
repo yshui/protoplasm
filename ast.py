@@ -292,24 +292,26 @@ class UOP(Expr):
         return self.opr.get_modified(either)
 
 class BinOP(Expr):
-    def noconst_emit(self, varv, ir, dst):
+    def noconst_emit(self, st, ir, dst):
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
         if self.op not in {'&&', '||'}:
             if self.op in {'//', '%', '-'}:
                 #for these operators, we don't want the left to be constant
-                lres = self.lopr.get_result(varv, ir, True)
+                lres = self.lopr.get_result(st, ir, True)
             else :
-                lres = self.lopr.get_result(varv, ir)
-            rres = self.ropr.get_result(varv, ir)
+                lres = self.lopr.get_result(st, ir)
+            rres = self.ropr.get_result(st, ir)
             bb = ir.last_bb
-            dst = varv.next_ver(dst)
+            dst = st.next_ver(dst)
             if self.op in arithm:
                 bb += [Arithm(self.op, dst, lres, rres)]
             else :
                 bb += [Cmp(self.op, lres, rres, dst)]
         elif self.op in {'&&', '||'}:
             #emit IR for left operand first
-            lres = self.lopr.get_result(varv, ir)
+            #left, right might include assignment, so we need additional
+            #phi nodes
+            lres = self.lopr.get_result(st, ir)
             bb = ir.last_bb
             prologue_name = bb.name
             epname = ir.next_name()
@@ -324,13 +326,20 @@ class BinOP(Expr):
             bb += [Br(brop, lres, epname, roprbb.name)]
 
             #emit IR for right operand
-            rres = self.ropr.get_result(varv, ir)
+            #keep track of what's changed in right
+            st.cp_push()
+            rres = self.ropr.get_result(st, ir)
             bb = ir.last_bb
             bb += [Br(0, None, epname, None)]
+            m = st.cp_pop()
 
             bb = ir.append_bb(epname)
-            dst = varv.next_ver(dst)
+            for v in m:
+                rv = st.curr_ver(v)
+                nv = st.next_ver(v)
+                bb += [Phi(nv, prologue_name, m[v], roprbb.name, rv)]
 
+            dst = st.next_ver(dst)
             #generate result
             #for &&, if we jump from prologue, result = 0, otherwise = right operand
             #for ||, if we jump from prologue result = left, otherwise = right
