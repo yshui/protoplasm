@@ -2,23 +2,110 @@ from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret
 import copy
 import logging
 
-class VarVer:
+class SymTable:
     #this class is used to keep track of variable version
     #since we are using SSA here
-    def __init__(self):
+    def __init__(self, dlist=None, prototype=None):
         self.d = {}
-    def get_dfn(self):
-        return set(self.d.keys())
-    def next_ver(self, name):
-        assert isinstance(name, str)
-        if name not in self.d:
-            self.d[name] = 0
+        self.nchild = {}
+        self.t = {}
+        self.prototype = prototype
+        self.modified = {}
+        self.mstack = []
+        self.root = {}
+        self.d[0] = -1
+        if prototype:
+            self.root[0] = self.prototype.root[0]
         else :
-            self.d[name] += 1
-        return "%"+name+"."+str(self.d[name])
+            self.root[0] = self
+            self.nchild[0] = 0
+        if dlist:
+            for d in dlist:
+                for v in d.vlist:
+                    self.new_var(v.name, d.t)
+
+    def __contains__(self, other):
+        if other in self.d:
+            return True
+        if not self.prototype:
+            return False
+        return other in self.prototype
+
+    def cp_push(self):
+        #restart nonlocal variable accounting
+        self.mstack.append(self.modified)
+        self.modified = {}
+
+    def cp_pop(self):
+        m = self.modified
+        if self.mstack:
+            self.modified = self.mstack.pop()
+            for v in m:
+                if v not in self.modified:
+                    self.modified[v] = m[v]
+        return m
+
+    def get_dclr(self):
+        res = set(self.d.keys())
+        if self.prototype:
+            res |= self.prototype.get_dclr()
+        return res
+
+    def get_dfn(self): #get all possibly initialized variable
+        res = set([x for x in self.d if self.d[x] >= 0])
+        if self.prototype:
+            res |= self.prototype.get_dfn()
+        return res
+
+    def get_root(self, name):
+        if not self.prototype or name not in self.prototype:
+            if name in self.d:
+                return self
+            return None
+        return self.prototype.get_root(name)
+
+    def new_var(self, name, t=None):
+        self.d[name] = -1
+        self.root[name] = self.get_root(name)
+        self.nchild[name] = 0
+        self.t[name] = t
+
+    def new_child(self, name):
+        assert self.root[name] == self
+        self.nchild[name] += 1
+        return self.nchild[name]-1
+
+    def build_name(self, name):
+        ver = self.d[name]
+        assert ver >= 0, "Uninitialized variable %s" % name
+        res = "%s.%d" % (name, ver)
+        if name == 0:
+            res = res[2:]
+        return "%"+res
+
+    def is_initialized(self, name):
+        if name in self.d:
+            return self.d[name] >= 0
+        assert self.prototype
+        return self.prototype.is_initialized(name)
+
+    def next_ver(self, name):
+        assert isinstance(name, str) or name == 0
+        if name not in self.modified and self.is_initialized(name) and name != 0:
+            self.modified[name] = self.curr_ver(name)
+        if name not in self.d:
+            return self.prototype.next_ver(name)
+        self.d[name] = self.root[name].new_child(name)
+        return self.build_name(name)
+
     def curr_ver(self, name):
-        assert name in self.d, name
-        return "%"+name+"."+str(self.d[name])
+        assert isinstance(name, str) or name == 0
+        if name not in self.d:
+            return self.prototype.curr_ver(name)
+        return self.build_name(name)
+
+    def __str__(self):
+        return "All: %s, modified: %s" % (self.d, self.modified)
 
 class Type:
     def __init__(self, name):
@@ -57,12 +144,12 @@ class Expr:
         assert isinstance(noconst, bool)
         if self.is_constant:
             if noconst:
-                return self.const_emit(varv, ir, 'tmp')
+                return self.const_emit(varv, ir, 0)
             else :
                 return self.const_result(varv, ir)
-        self.noconst_emit(varv, ir, 'tmp')
-        return varv.curr_ver('tmp')
-    def get_defined(self, _=False):
+        self.noconst_emit(varv, ir, 0)
+        return varv.curr_ver(0)
+    def get_modified(self, _=False):
         return set()
 
 class Inc(Expr):
@@ -94,9 +181,9 @@ class Inc(Expr):
     def get_result(self, varv, ir, noconst=False):
         self.emit(varv, ir)
         return self.res
-    def wellformed(self, dfn):
-        return self.lval.wellformed(dfn)
-    def get_defined(self, either=False):
+    def wellformed(self, st, dfn):
+        return self.lval.wellformed(st, dfn)
+    def get_modified(self, either=False):
         return {self.lval.name}
 
 class Asgn(Expr):
@@ -130,10 +217,14 @@ class Asgn(Expr):
             return self.const_result(varv, ir)
         self.emit(varv, ir)
         return self.res
-    def wellformed(self, defined):
-        return self.rhs.wellformed(defined)
-    def get_defined(self, either=False):
-        return {self.lhs.name}|self.rhs.get_defined(either)
+    def wellformed(self, st, defined):
+        if self.lhs.name not in st:
+            logging.error("Variable %s used but not declared, at line %d" % (self.lhs.name, self.linenum))
+            logging.error(self)
+            return False
+        return self.rhs.wellformed(st, defined)
+    def get_modified(self, either=False):
+        return {self.lhs.name}|self.rhs.get_modified(either)
 
 class UOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -164,10 +255,10 @@ class UOP(Expr):
         self.op = op
         self.opr = opr
         self.linenum = linenum
-    def wellformed(self, defined):
-        return self.opr.wellformed(defined)
-    def get_defined(self, either=False):
-        return self.opr.get_defined(either)
+    def wellformed(self, st, defined):
+        return self.opr.wellformed(st, defined)
+    def get_modified(self, either=False):
+        return self.opr.get_modified(either)
 
 class BinOP(Expr):
     def noconst_emit(self, varv, ir, dst):
@@ -249,11 +340,11 @@ class BinOP(Expr):
             self.op = op
         else :
             self.op = "//"
-    def wellformed(self, defined):
-        return self.lopr.wellformed(defined) and self.ropr.wellformed(defined)
-    def get_defined(self, either=False):
-        ldfn = self.lopr.get_defined(either)
-        rdfn = self.ropr.get_defined(either)
+    def wellformed(self, st, defined):
+        return self.lopr.wellformed(st, defined) and self.ropr.wellformed(st, defined)
+    def get_modified(self, either=False):
+        ldfn = self.lopr.get_modified(either)
+        rdfn = self.ropr.get_modified(either)
         if self.op not in {'&&', '||'} or either:
             return ldfn|rdfn
         return ldfn
@@ -278,9 +369,12 @@ class Var(Expr):
         return self.name == other.name
     def __hash__(self):
         return self.name.__hash__()
-    def wellformed(self, defined):
+    def wellformed(self, st, defined):
+        if self.name not in st:
+            logging.error("Undeclared variable %s used at line %d" % (self.name, self.linenum))
+            return False
         if self.name not in defined:
-            logging.error("Variable {0} used at line {1}, but not defined".format(self.name, self.linenum))
+            logging.error("Variable {0} used before initialization, at line {1}".format(self.name, self.linenum))
             return False
         return True
 
@@ -300,7 +394,7 @@ class Num(Expr):
             self.number = num
         else :
             raise Exception("num is not a number???")
-    def wellformed(self, defined):
+    def wellformed(self, _, __):
         return True
 
 class Inpt:
@@ -317,11 +411,11 @@ class Inpt:
         bb = ir.last_bb
         bb += [IInpt(dst)]
     def get_result(self, varv, ir):
-        self.emit(varv, ir, 'tmp')
-        return varv.curr_ver('tmp')
-    def wellformed(self, defined):
+        self.emit(varv, ir, 0)
+        return varv.curr_ver(0)
+    def wellformed(self, _, __):
         return True
-    def get_defined(self, _=False):
+    def get_modified(self, _=False):
         return set()
 
 class Prnt:
@@ -334,108 +428,101 @@ class Prnt:
         res = self.expr.get_result(varv, ir)
         bb = ir.last_bb
         bb += [IPrnt(res)]
-    def get_defined(self, either=False):
-        return self.expr.get_defined(either)
-    def wellformed(self, defined):
-        return self.expr.wellformed(defined)
+    def get_modified(self, either=False):
+        return self.expr.get_modified(either)
+    def wellformed(self, st, defined):
+        return self.expr.wellformed(st, defined)
 
 class If:
     def __init__(self, cond, then, e, linenum=0):
         self.cond = cond
         self.then = then
-        self.e = e
+        if not isinstance(then, Block):
+            self.then = Block([then], None, then.linenum)
+        self.else_ = e
+        if not isinstance(e, Block) and e:
+            self.else_ = Block([e], None, e.linenum)
         self.linenum = linenum
     def __str__(self):
         res = 'If('+str(self.cond)+')->{'+str(self.then)
-        if self.e:
-            res += ',Else->'+str(self.e)+'}'
+        if self.else_:
+            res += ',Else->'+str(self.else_)+'}'
         else :
             res += '}'
         return res
-    def emit(self, varv, ir):
-        res = self.cond.get_result(varv, ir)
-        pdfn = varv.get_dfn()
-        tmod = self.then.get_defined(True)
-        emod = set()
-        if self.e:
-            emod = self.e.get_defined(True)
-        mod = tmod|emod
+    def emit(self, st, ir):
+        res = self.cond.get_result(st, ir)
 
+        st.cp_push()
         tbbname = ir.next_name()
         epname = ir.next_name()
         ebbname = ir.next_name()
         prologue = ir.last_bb
-        if self.e :
+        if self.else_ :
             prologue += [Br(1, res, ebbname, tbbname)]
         else :
             prologue += [Br(1, res, epname, tbbname)]
-        pmap = {}
-        for v in mod&pdfn:
-            pmap[v] = varv.curr_ver(v)
 
         thenb = ir.append_bb(tbbname)
-        self.then.emit(varv, ir)
+        self.then.emit(st, ir)
         thenb = ir.last_bb
         thenb += [Br(0, None, epname, None)]
-        #get last version
-        thenmap = {}
-        for v in tmod:
-            thenmap[v] = varv.curr_ver(v)
+        tgt2b = prologue.name
 
-        elsemap = {}
-        if self.e :
+        st.cp_push()
+        if self.else_ :
             elseb = ir.append_bb(ebbname)
-            self.e.emit(varv, ir)
+            self.else_.emit(st, ir)
             elseb = ir.last_bb
             elseb += [Br(0, None, epname, None)]
-            for v in emod:
-                elsemap[v] = varv.curr_ver(v)
-
-        ep = ir.append_bb(epname)
-        if self.e:
             tgt2b = elseb.name
+
+        mod_else = st.cp_pop()
+        mod = st.cp_pop()
+        tsym = self.then.symtable
+        if self.else_:
+            esym = self.else_.symtable
         else :
-            tgt2b = prologue.name
+            esym = SymTable()
+        ep = ir.append_bb(epname)
         #Add phi nodes here
         #Unused phis will be removed later
-        for v in mod:
-            if v in tmod :
-                tgt1 = thenmap[v]
-                if v in emod :
-                    tgt2 = elsemap[v]
-                elif v in pdfn:
-                    tgt2 = pmap[v]
+        for v in mod: #modified in both branch
+            if v in tsym.modified and v not in tsym.d:
+                if v in mod_else:
+                    tgt1 = mod_else[v] #the variable name before else modify it
+                    tgt2 = esym.curr_ver(v)
                 else :
-                    continue
-            elif v in emod :
-                tgt2 = elsemap[v]
-                if v in pdfn :
-                    tgt1 = pmap[v]
-                else :
-                    continue
-            nv = varv.next_ver(v)
+                    tgt1 = st.curr_ver(v) #variable not modified in else, just get its name
+                    tgt2 = mod[v]
+            else :
+                assert v in mod_else
+                tgt1 = mod[v]
+                tgt2 = esym.curr_ver(v)
+            nv = st.next_ver(v)
             ep += [Phi(nv, tgt2b, tgt2, thenb.name, tgt1)]
 
-    def wellformed(self, defined):
+    def wellformed(self, st, defined):
         try :
-            assert self.cond.wellformed(defined)
-            defined = defined|self.cond.get_defined()
-            assert self.then.wellformed(defined)
-            if self.e :
-                assert self.e.wellformed(defined)
-        except AssertionError :
+            assert self.cond.wellformed(st, defined)
+            defined = defined|self.cond.get_modified()
+            assert self.then.wellformed(st, defined)
+            if self.else_ :
+                assert self.else_.wellformed(st, defined)
+        except AssertionError as e:
+            print(e)
             return False
         return True
-    def get_defined(self, either=False):
-        cond_dfn = self.cond.get_defined(either)
-        if not self.e :
+    def get_modified(self, either=False):
+        cond_dfn = self.cond.get_modified(either)
+        if not self.else_ :
             #in case the then branch is not run
             if either :
-                return cond_dfn|self.then.get_defined(either)
+                return cond_dfn|self.then.get_modified(either)
             return cond_dfn
         #variables must be in both branch to be defined
-        td = self.then.get_defined(either)
-        te = self.e.get_defined(either)
+        td = self.then.get_modified(either)
+        te = self.else_.get_modified(either)
         if either :
             return cond_dfn|td|te
         return (td&te)|cond_dfn
@@ -447,18 +534,26 @@ class Loop:
         self.post = post
         self.cond, self.cond_pos = cond
         self.do = do
+        if not isinstance(self.do, Block):
+            self.do = Block([do], None, linenum=linenum)
         self.linenum = linenum
     def __str__(self):
         cp = ['Pre', 'Post']
         return 'For(%s;%s<%s>;%s){%s}' % (self.pre, self.cond, cp[self.cond_pos], self.post, self.do)
-    def emit(self, varv, ir):
+    def emit(self, st, ir):
         #emit pre
         if self.pre:
-            self.pre.emit(varv, ir)
-        pdfn = varv.get_dfn()
-        mod = self.do.get_defined(True)|self.cond.get_defined(True)
+            self.pre.emit(st, ir)
+        print(st)
+
+        mod = self.do.get_modified(True)
+        print("XX %s" % mod)
+        mod |= self.cond.get_modified(True)
+        print("XX2 %s" % mod)
         if self.post:
-            mod |= self.post.get_defined(True)
+            mod |= self.post.get_modified(True)
+        print("XX3 %s" % mod)
+
         before = ir.last_bb
         prname = ir.next_name()
         epname = ir.next_name()
@@ -472,48 +567,54 @@ class Loop:
         else :
             before += [Br(0, None, bname, None)]
 
-        old_var = {}
-        lb_var = {}
+        st.cp_push() #create a checkpoint
         var_phi = {}
+        pdfn = st.get_dfn()
+        print("SAD %s %s" % (pdfn, self))
         for v in mod&pdfn:
-            old_var[v] = varv.curr_ver(v)
-            var_phi[v] = varv.next_ver(v)
+            var_phi[v] = st.next_ver(v)
 
-        def emit_prologue(is_end):
-            nonlocal prname, ir, lb_var, lbname, varv, prologue
+        def emit_prologue():
+            nonlocal prname, ir, prologue, st
             prologue = ir.append_bb(prname)
-            res = self.cond.get_result(varv, ir)
+            res = self.cond.get_result(st, ir)
             prologue_end = ir.last_bb
             prologue_end += [Br(1, res, epname, bname)]
-            if is_end:
-                lbname = prologue_end.name
-                for v in mod&pdfn:
-                    lb_var[v] = varv.curr_ver(v)
 
-        def emit_body(is_end):
-            nonlocal bname, ir, lb_var, lbname, varv, body
+        def emit_body():
+            nonlocal bname, ir, body, st
             body = ir.append_bb(bname)
             bname = body.name
-            self.do.emit(varv, ir)
+            self.do.emit(st, ir)
             if self.post:
-                self.post.emit(varv, ir)
+                self.post.emit(st, ir)
             body_end = ir.last_bb
             body_end += [Br(0, None, prname, None)]
-            if is_end:
-                lbname = body_end.name
-                for v in mod&pdfn:
-                    lb_var[v] = varv.curr_ver(v)
 
+        prvar = {}
         if self.cond_pos == 0: #pre
-            emit_prologue(False)
-            emit_body(True)
+            emit_prologue()
+            for v in var_phi:
+                prvar[v] = st.curr_ver(v)
+            outbname = ir.last_bb.name
+            emit_body()
         else :
-            emit_body(False)
-            emit_prologue(True)
+            emit_body()
+            emit_prologue()
+            for v in var_phi:
+                prvar[v] = st.curr_ver(v)
+            outbname = ir.last_bb.name
+        lbname = ir.last_bb.name
 
         phis = []
-        for v in mod&pdfn:
-            i = Phi(var_phi[v], before.name, old_var[v], lbname, lb_var[v])
+        pmod = st.cp_pop()
+        assert set(pmod) == mod, "%s %s" % (pmod, mod)
+        print("VAR %s %s" % (var_phi, self))
+        print("PMOD %s %s" % (pmod, self))
+        for v in pmod:
+            if v not in var_phi:
+                continue
+            i = Phi(var_phi[v], before.name, pmod[v], lbname, st.curr_ver(v))
             phis.append(i)
 
         if self.cond_pos == 0:
@@ -523,79 +624,91 @@ class Loop:
 
         epilogue = ir.append_bb(epname)
         for v in var_phi:
-            dst = varv.next_ver(v)
-            epilogue += [Arithm('+', dst, var_phi[v], 0)]
+            dst = st.next_ver(v)
 
-    def wellformed(self, defined):
+            #use the last version from prologue block
+            epilogue += [Arithm('+', dst, prvar[v], 0)]
+
+    def wellformed(self, st, defined):
         try :
             if self.pre:
-                assert self.pre.wellformed(defined)
-                defined = defined|self.pre.get_defined()
+                assert self.pre.wellformed(st, defined)
+                defined = defined|self.pre.get_modified()
             if self.cond_pos == 0:
-                assert self.cond.wellformed(defined)
-                defined = defined|self.cond.get_defined()
-            assert self.do.wellformed(defined)
-            defined = defined|self.do.get_defined()
+                assert self.cond.wellformed(st, defined)
+                defined = defined|self.cond.get_modified()
+            assert self.do.wellformed(st, defined)
+            defined = defined|self.do.get_modified()
             if self.post:
-                assert self.post.wellformed(defined)
-                defined = defined|self.post.get_defined()
+                assert self.post.wellformed(st, defined)
+                defined = defined|self.post.get_modified()
             if self.cond_pos == 1:
-                assert self.cond.wellformed(defined)
-        except AssertionError :
+                assert self.cond.wellformed(st, defined)
+        except AssertionError as e:
+            print(e)
             return False
         return True
-    def get_defined(self, either=False):
+    def get_modified(self, either=False):
         #if a loop is not run, nothing is defined
         #so defined is only what defined in the condition
-        res = self.cond.get_defined(either)
+        res = self.cond.get_modified(either)
         if self.cond_pos == 1 or either: #post
             #loop well run at least once
-            res = res|self.do.get_defined(either)
+            res = res|self.do.get_modified(either)
             if self.post:
-                res = res|self.post.get_defined(either)
+                res = res|self.post.get_modified(either)
         if self.pre :
-            res = res|self.pre.get_defined(either)
+            res = res|self.pre.get_modified(either)
+        print("%s %s %s" % (res, self, either))
         return res
 
 class Block:
-    def emit(self, varv, ir):
-        for w in self.expr_list:
-            w.emit(varv, ir)
+    def emit(self, st, ir):
+        assert st == self.symtable.prototype, "%s %s" % (st, self.symtable.prototype)
+        for w in self.slist:
+            w.emit(self.symtable, ir)
         if self.is_top:
             bb = ir.last_bb
             if bb.br:
                 bb = ir.append_bb("Lend")
             bb += [Ret()]
 
-    def wellformed(self, _def):
-        defined = copy.copy(_def)
-        for w in self.expr_list:
-            if not w.wellformed(defined):
+    def wellformed(self, st, defined):
+        if not self.symtable:
+            self.symtable = SymTable(self.dlist, st)
+        else :
+            assert self.symtable.prototype == st
+        dfn = copy.copy(defined)
+        #clear everything that is re-declared in this block
+        dfn -= set(self.symtable.d)
+        for w in self.slist:
+            if not w.wellformed(self.symtable, dfn):
                 return False
-            defined |= w.get_defined()
+            dfn |= w.get_modified()
         return True
-    def get_defined(self, either=False):
-        defined = set()
-        for w in self.expr_list:
-            defined |= w.get_defined(either)
-        return defined
-    def __init__(self, elist, linenum=0):
-        self.expr_list = elist
+    def get_modified(self, either=False):
+        mod = set()
+        for w in self.slist:
+            mod |= w.get_modified(either)
+        return mod-set(self.symtable.d)
+    def __init__(self, slist, dlist, linenum=0):
+        self.slist = slist
+        self.dlist = dlist
+        self.symtable = None
+        self.parent = None
         self.is_top = False
         self.linenum = linenum
     def gencode(self):
-        assert self.wellformed(set())
         res = IR()
-        varv = VarVer()
-        for e, _ in self.expr_list:
-            res += e.emit(varv)
+        for e, _ in self.slist:
+            res += e.emit(self.symtable)
         return res
     def __iadd__(self, obj):
-        self.expr_list += [obj]
+        self.slist += [obj]
         return self
     def __str__(self):
         res = "["
-        for w in self.expr_list:
+        for w in self.slist:
             res += str(w)
             res += ", "
         res += "]"

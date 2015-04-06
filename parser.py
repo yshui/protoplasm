@@ -15,8 +15,8 @@ precedence = (
 )
 
 def p_prgm(p):
-    'prgm : stmt_list'
-    p[0] = p[1]
+    'prgm : decl_list stmt_list'
+    p[0] = Block(p[2], p[1], p.lineno(1))
     p[0].is_top = True
 
 def p_empty(p):
@@ -54,13 +54,13 @@ def p_var(p):
     'var : ID'
     p[0] = Var(p[1], p.lineno(1))
 
-def p_stmt_list_single(p):
-    'stmt_list : stmt'
-    p[0] = Block([p[1]], p.lineno(1))
+def p_stmt_list_empty(p):
+    'stmt_list : empty'
+    p[0] = []
 
 def p_stmt_list(p):
     'stmt_list : stmt_list stmt'
-    p[1] += p[2]
+    p[1].append(p[2])
     p[0] = p[1]
 
 def p_stmt(p):
@@ -101,8 +101,8 @@ def p_print(p):
     p[0] = Prnt(p[3], p.lineno(1))
 
 def p_block(p):
-    'block : LBRACE stmt_list RBRACE'
-    p[0] = p[2]
+    'block : LBRACE decl_list stmt_list RBRACE'
+    p[0] = Block(p[3], p[2], p.lineno(1))
 
 def p_if(p):
     '''if : IF expr THEN stmt ELSE stmt

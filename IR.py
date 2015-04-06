@@ -1,10 +1,10 @@
 import copy
-from utils import _str_set, _dict_print, _set_print
+from utils import _str_set, _str_dict, _dict_print, _set_print
 from functools import reduce
 import logging
 
 usable_reg = []
-for __i in range(0, 10):
+for __i in range(0, 2):
     usable_reg += ["t{0}".format(__i)]
 def gen_rvmap(*arg):
     #res = ""
@@ -170,11 +170,6 @@ class NIns(BaseIns):
     is_phi = False
     def __init__(self):
         self.dst = None
-    @property
-    def used(self):
-        if self.dst.is_var:
-            return self.dst.used
-        return True
     def get_dfn(self):
         return self.dst.get_dfn()
 
@@ -317,7 +312,8 @@ class Cmp(NIns):
         self.is_phi = False
         self.is_br = False
     def allocate(self, regmap):
-        _dict_print(regmap)
+        rrr = _str_dict(regmap)
+        print(rrr)
         self.dst = self.dst.allocate(regmap)
         self.src1 = self.src1.allocate(regmap)
         self.src2 = self.src2.allocate(regmap)
@@ -441,14 +437,10 @@ def get_stack_usage(ins):
 
 class Load(NIns):
     def __init__(self, dst, m):
-        if isinstance(m, int):
-            m = Imm(m)
-        assert isinstance(m, Cell) or isinstance(m, Imm), str(m)
-        if isinstance(dst, str):
-            dst = get_operand(dst, True)
-        assert isinstance(dst, Register) or isinstance(dst, Var)
-        self.dst = dst
-        self.m = m
+        self.dst = get_operand(dst, True)
+        assert not self.dst.is_imm
+        self.m = get_operand(m)
+        assert self.m.is_mem or self.m.is_imm
         self.is_phi = False
         self.is_br = False
     def __str__(self):
@@ -464,10 +456,10 @@ class Load(NIns):
 
 class Store(NIns):
     def __init__(self, dst, r):
-        assert isinstance(r, Register), r
-        assert isinstance(dst, Cell)
-        self.dst = dst
-        self.r = r
+        self.dst = get_operand(dst)
+        assert self.dst.is_mem
+        self.r = get_operand(r)
+        assert self.r.is_reg
     def gencode(self):
         return move_or_store(self.r, self.dst)
     def validate(self, dfn):
@@ -476,6 +468,36 @@ class Store(NIns):
         return self.r.get_used()
     def __str__(self):
         return "store %s, %s" % (str(self.dst), str(self.r))
+
+class Malloc(NIns):
+    def __init__(self, dst, size):
+        self.dst = get_operand(dst)
+        assert self.dst.is_var or self.dst.is_reg
+        self.size = get_operand(size)
+        assert not self.size.is_mem
+    def validate(self, dfn):
+        self.dst.validate(dfn)
+        self.size.validate(dfn)
+    def get_used(self):
+        return self.size.get_used()
+    def __str__(self):
+        return "%s = malloc %s" % (self.dst, self.size)
+    def allocate(self, regmap):
+        self.dst = self.dst.allocate(regmap)
+        self.size = self.size.allocate(regmap)
+    def gencode(self):
+        res = "\tli $v0, 9\n"
+        if self.size.is_imm:
+            res += "\tli $a0, %d\n" % (self.size.val+1)
+            s = str(self.size.val+1)
+        else :
+            assert self.size.is_reg
+            res += "\tadd $a0, %s, 4\n" % (self.size)
+            s = str(self.size)
+        res += "\tsyscall\n"
+        assert self.dst.is_reg
+        res += "\tadd %s, $v0, 0" % (self.dst)
+        return res
 
 class Ret:
     def __init__(self):

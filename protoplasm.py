@@ -1,6 +1,5 @@
 from parser import parser
 from IR import IR
-from ast import VarVer
 import transform
 import sys
 import logging
@@ -16,15 +15,14 @@ if __name__ == "__main__":
     res = parser.parse(f.read(), debug=logger)
     logger.setLevel(logging.INFO)
     logging.info(res)
-    wf = res.wellformed(set())
+    wf = res.wellformed(None, set())
     logging.info(wf)
     if not wf:
         logging.error("Program not wellformed")
         sys.exit(1)
     ir = IR()
     ir.append_bb(None)
-    varv = VarVer()
-    res.emit(varv, ir)
+    res.emit(None, ir)
     logging.info("\n\nFisrt version of IR: ")
     ir.finish()
     logger.removeHandler(lhdlr)
