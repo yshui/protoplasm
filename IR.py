@@ -4,7 +4,7 @@ from functools import reduce
 import logging
 
 usable_reg = []
-for __i in range(0, 2):
+for __i in range(0, 10):
     usable_reg += ["t{0}".format(__i)]
 def gen_rvmap(*arg):
     #res = ""
@@ -86,8 +86,9 @@ class Register(BaseOpr):
         return "$"+self.val
     def get_used(self):
         return set()
-    def allocate(self, _):
-        assert False, "Cannot allocate register for a register %s" % self
+    def allocate(self, regmap):
+        assert self not in regmap, "Cannot allocate register for a register %s" % self
+        return self
 
 class Imm(BaseOpr):
     def __init__(self, number):
@@ -228,7 +229,7 @@ class Arithm(NIns):
             6 : 'and',
             7 : 'or',
     }
-    def gencode(self):
+    def gencode(self, _):
         if self.opr1.is_imm and self.opr2.is_imm:
             assert False
         if self.opr2.is_imm:
@@ -251,7 +252,7 @@ class Arithm(NIns):
         if self.opr1.is_imm:
             if self.opr1.val == 0:
                 #use the 0 register
-                self.opr1 = Register("r0")
+                self.opr1 = Register("0")
             elif self.op in {1, 3, 6, 7}:
                 #swap opr1 and opr2 for +, *, &, |
                 self.opr1, self.opr2 = self.opr2, self.opr1
@@ -268,7 +269,7 @@ class Arithm(NIns):
         self.opr2.validate(dfn)
         self.dst.validate(dfn)
     def __str__(self):
-        res = "%s = %s, %s, %s" % (self.dst, self.opname[self.op], str(self.opr1), str(self.opr2))
+        res = "%s = %s %s, %s" % (self.dst, self.opname[self.op], str(self.opr1), str(self.opr2))
         res += gen_rvmap(self.dst, self.opr1, self.opr2)
         return res+self.comment
     def get_used(self):
@@ -289,7 +290,7 @@ class IInpt(NIns):
         self.dst = self.dst.allocate(regmap)
     def get_used(self):
         return set()
-    def gencode(self):
+    def gencode(self, _):
         out = "\tli $v0, 5\n\tsyscall\n"
         if not self.dst.is_nil:
             assert self.dst.is_reg
@@ -357,7 +358,7 @@ class Cmp(NIns):
             5 : "sne"
     }
     opc = {'==': 0, '<=': 1, '<' : 2, '>=': 3, '>' : 4, '!=': 5}
-    iopc = {0: 0, 1: 4, 2: 3, 3: 2, 4: 1, 5: 5}
+    iopc = {0: 0, 1: 3, 2: 4, 3: 1, 4: 2, 5: 5}
     def gencode(self, _):
         assert self.dst.is_reg
         if self.src1.is_imm and self.src2.is_imm:
@@ -369,7 +370,7 @@ class Cmp(NIns):
             assert self.src1.is_reg, self.src1
             assert self.src2.is_reg or self.src2.is_imm
             return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.src1), str(self.src2))
-    def __init__(self, op, src1, src2, dst, c=None):
+    def __init__(self, op, dst, src1, src2, c=None):
         assert op in self.opc
         self.op = self.opc[op]
         self.src1 = get_operand(src1)
@@ -382,7 +383,6 @@ class Cmp(NIns):
             self.comment = "\t#"+c
     def allocate(self, regmap):
         rrr = _str_dict(regmap)
-        print(rrr)
         self.dst = self.dst.allocate(regmap)
         self.src1 = self.src1.allocate(regmap)
         self.src2 = self.src2.allocate(regmap)
@@ -538,8 +538,9 @@ class Load(NIns):
         return "%s = load %s%s" % (self.dst, self.m, self.comment)
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
+        self.m = self.m.allocate(regmap)
     def get_used(self):
-        return set()
+        return self.m.get_used()|self.dst.get_used()
     def gencode(self, _):
         return load_or_move(self.m, self.dst)
     def validate(self, dfn):
@@ -562,7 +563,7 @@ class Store(NIns):
     def validate(self, dfn):
         self.r.validate(dfn)
     def get_used(self):
-        return self.r.get_used()
+        return self.r.get_used()|self.dst.get_used()
     def __str__(self):
         return "store %s, %s%s" % (self.dst, self.r, self.comment)
 
@@ -891,7 +892,7 @@ class IR:
             nextbb = None
             if n+1 < numbb:
                 nextbb = self.bb[n+1].name
-            f.write(bb.gencode(ir, nextbb))
+            f.write(bb.gencode(self, nextbb))
         f.close()
     def finish(self):
         logging.debug(self)

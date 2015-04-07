@@ -1,5 +1,5 @@
 import ply.yacc as yacc
-from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc, Decl, Type, Dim, New
+from ast import Asgn, BinOP, Var, Num, Inpt, Prnt, Block, If, Loop, UOP, Inc, Decl, Type, Dim, New, ArrIndx
 from lexer import tokens
 import sys
 import logging
@@ -51,7 +51,7 @@ def p_var_list_single(p):
     p[0] = [p[1]]
 
 def p_var(p):
-    'var : ID'
+    'var : ID dimstar'
     p[0] = Var(p[1], p.lineno(1))
 
 def p_stmt_list_empty(p):
@@ -75,6 +75,9 @@ def p_stmt(p):
 def p_lvalue_id(p):
     'lvalue : ID'
     p[0] = Var(p[1], p.lineno(1))
+def p_lvalue_arr(p):
+    'lvalue : lvalue LBRACKET expr RBRACKET'
+    p[0] = ArrIndx(p[1], p[3], linenum=p.lineno(1))
 
 def p_assign(p):
     'assign : lvalue ASSIGN expr'
@@ -168,8 +171,8 @@ def p_expr_asgn(p):
     p[0] = p[1]
 
 def p_expr_var(p):
-    'expr : ID'
-    p[0] = Var(p[1], p.lineno(1))
+    'expr : lvalue'
+    p[0] = p[1]
 
 def p_expr_uop(p):
     '''expr : NOT expr

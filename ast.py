@@ -1,4 +1,4 @@
-from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, Malloc, Store, Cell
+from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, Malloc, Store, Cell, ROStr
 import copy
 import logging
 
@@ -54,6 +54,8 @@ class SymTable:
             for v in m:
                 if v not in self.modified:
                     self.modified[v] = m[v]
+        else :
+            self.modified = {}
         return m
 
     def get_dclr(self):
@@ -80,11 +82,22 @@ class SymTable:
 
     def assign(self, name, var):
         assert isinstance(name, str)
-        if name not in self.modified and self.is_initialized(name):
-            self.modified[name] = self.curr_ver(name)
+        if name not in self.modified:
+            if self.is_initialized(name):
+                self.modified[name] = self.curr_ver(name)
+            else :
+                self.modified[name] = None
         if name not in self.d:
             return self.prototype.assign(name, var)
         self.d[name] = str(var)
+
+    def unassign(self, name):
+        if name in self.modified:
+            assert self.modified[name] is None
+            del self.modified[name]
+        if name not in self.d:
+            return self.prototype.unassign(name)
+        self.d[name] = None
 
     def curr_ver(self, name):
         assert isinstance(name, str)
@@ -99,6 +112,8 @@ class SymTable:
 class Type:
     def __init__(self, name):
         self.name = name
+    def __str__(self):
+        return self.name
 class Array(Type):
     def __init__(self, inner):
         self.inner = inner
@@ -113,6 +128,8 @@ class Dim:
         self.size = size
         assert isinstance(star, int)
         self.star = star
+    def __str__(self):
+        return "[%s], []*%s" % (self.size, self.star)
 
 class Expr:
     @property
@@ -140,6 +157,8 @@ class New(Expr):
     def __init__(self, t, dim):
         self.t = t
         self.dim = dim
+    def __str__(self):
+        return "New(%s, %s)" % (self.t, self.dim)
     @property
     def is_constant(self):
         return False
@@ -154,7 +173,9 @@ class New(Expr):
         bb += [Malloc(ndst, szp1m4, c=str(self))]
         #store the size of the array
         bb += [Store(Cell(0, base=ndst), res)]
-        return ndst
+        ndst2 = st.allocator.next_name()
+        bb += [Arithm('+', ndst2, ndst, 4)]
+        return ndst2
     def wellformed(self, st, defined):
         return self.dim.size.wellformed(st, defined)
     def get_modified(self, either):
@@ -176,27 +197,27 @@ class Inc(Expr):
     def emit(self, st, ir):
         opn = ['+', '-']
         if not self.res:
-            opr = st.curr_ver(self.lval.name)
+            opr = self.lval.get_result(st, ir)
             self.res = opr
-            cdst = st.allocator.next_name(self.lval.name)
+            cdst = st.allocator.next_name()
             bb = ir.last_bb
             bb += [Arithm(opn[self.op], cdst, opr, 1, c=str(self))]
             if self.pos == 0: #pre
                 self.res = cdst
-            st.assign(self.lval.name, cdst)
+            self.lval.assign(st, ir, cdst)
     def get_result_noconst(self, st, ir):
         self.emit(st, ir)
         return self.res
     def wellformed(self, st, dfn):
         return self.lval.wellformed(st, dfn)
     def get_modified(self, _=False):
-        return {self.lval.name}
+        return self.lval.get_modified(is_dst=True)
 
 class Asgn(Expr):
     def __str__(self):
         return "Asgn({0} = {1})".format(self.lhs, self.rhs)
     def __init__(self, lhs, rhs, linenum=0):
-        assert isinstance(lhs, Var)
+        assert isinstance(lhs, Var) or isinstance(lhs, ArrIndx)
         self.lhs = lhs
         self.rhs = rhs
         self.linenum = linenum
@@ -214,15 +235,11 @@ class Asgn(Expr):
         if not self.res:
             v = self.rhs.get_result(st, ir, True)
             self.res = v
-            st.assign(self.lhs.name, v)
+            self.lhs.assign(st, ir, v)
     def wellformed(self, st, defined):
-        if self.lhs.name not in st:
-            logging.error("Undeclared variable '%s' used at line %d" % (self.lhs.name, self.linenum))
-            logging.error(self)
-            return False
-        return self.rhs.wellformed(st, defined)
+        return self.lhs.wellformed(st, defined, True) and self.rhs.wellformed(st, defined)
     def get_modified(self, either=False):
-        return {self.lhs.name}|self.rhs.get_modified(either)
+        return self.lhs.get_modified(either, True)|self.rhs.get_modified(either)
 
 class UOP(Expr):
     def get_result_noconst(self, st, ir):
@@ -230,7 +247,7 @@ class UOP(Expr):
         bb = ir.last_bb
         cdst = st.allocator.next_name()
         if self.op == '!':
-            bb += [Cmp('==', copr, 0, cdst, c=str(self))]
+            bb += [Cmp('==', cdst, copr, 0, c=str(self))]
         elif self.op == '-':
             bb += [Arithm('-', cdst, copr, 0, c=str(self))]
         else :
@@ -274,7 +291,7 @@ class BinOP(Expr):
             if self.op in arithm:
                 bb += [Arithm(self.op, dst, lres, rres, c=str(self))]
             else :
-                bb += [Cmp(self.op, lres, rres, dst, c=str(self))]
+                bb += [Cmp(self.op, dst, lres, rres, c=str(self))]
             return dst
         if self.op in {'&&', '||'}:
             #emit IR for left operand first
@@ -323,8 +340,8 @@ class BinOP(Expr):
         return self.lopr.is_constant and self.ropr.is_constant
     def get_result_const(self, st, ir):
         assert self.is_constant
-        ll = self.lopr.const_result(st, ir)
-        rr = self.ropr.const_result(st, ir)
+        ll = self.lopr.get_result_const(st, ir)
+        rr = self.ropr.get_result_const(st, ir)
         if self.op not in {'&&', '||'} :
             return int(eval("%d %s %d" % (ll, self.op, rr)))
         elif self.op == '&&' :
@@ -373,16 +390,71 @@ class Var(Expr):
         return self.name == other.name
     def __hash__(self):
         return self.name.__hash__()
-    def wellformed(self, st, defined):
+    def wellformed(self, st, defined, is_dst=False):
         if self.name not in st:
             logging.error("Undeclared variable '%s' used at line %d" % (self.name, self.linenum))
             return False
-        if self.name not in defined:
+        if self.name not in defined and not is_dst:
             logging.error("Variable '{0}' used before initialization, at line {1}".format(self.name, self.linenum))
             return False
         return True
-    def assign(self, st, ir, var):
+    def assign(self, st, _, var):
         st.assign(self.name, var)
+    def get_modified(self, either=False, is_dst=False):
+        if is_dst:
+            return {self.name}
+        return set()
+
+class ArrIndx(Expr): #array indexing expr
+    def __init__(self, lhs, indx, linenum=0):
+        self.lhs = lhs
+        assert isinstance(lhs, ArrIndx) or isinstance(lhs, Var) #XXX remove later
+        self.index = indx
+        self.linenum = linenum
+    def __str__(self):
+        return "%s[%s]" % (self.lhs, self.index)
+    def get_offset(self, st, ir):
+        base = self.lhs.get_result(st, ir, True)
+        idx = self.index.get_result(st, ir)
+        bb = ir.last_bb
+
+        #load -4(base) for the size of array
+        sz = st.allocator.next_name()
+        bb += [Load(sz, Cell(-4, base=base), c="Get the size of "+str(self.lhs))]
+
+        cmpres = st.allocator.next_name()
+        bb += [Cmp('<', cmpres, idx, sz)]
+
+        nextbb = ir.next_name()
+        bb += [Br(1, cmpres, "Lbound",nextbb )]
+
+        bb = ir.append_bb(nextbb)
+        if isinstance(idx, int):
+            idx *= 4
+        else :
+            idx2 = st.allocator.next_name()
+            bb += [Arithm('*', idx2, idx, 4)]
+            idx = idx2
+        offset = st.allocator.next_name()
+        bb += [Arithm('+', offset, idx, base, c="Address of "+str(self))]
+        return offset
+    def get_result_noconst(self, st, ir):
+        offset = self.get_offset(st, ir)
+        result = st.allocator.next_name()
+        bb = ir.last_bb
+        bb += [Load(result, Cell(0, base=offset))]
+        return result
+    @property
+    def is_constant(self):
+        return False
+    def wellformed(self, st, dfn, _=False):
+        return self.lhs.wellformed(st, dfn, False) and self.index.wellformed(st, dfn)
+    def get_modified(self, either=False, is_dst=False):
+        return self.lhs.get_modified(either, False)|self.index.get_modified(either)
+    def assign(self, st, ir, v):
+        offset = self.get_offset(st, ir)
+        bb = ir.last_bb
+        bb += [Store(Cell(0, base=offset), v)]
 
 class Num(Expr):
     @property
@@ -431,7 +503,7 @@ class Prnt:
     def emit(self, st, ir):
         res = self.expr.get_result(st, ir)
         bb = ir.last_bb
-        bb += [IPrnt(res, c=str(self))]
+        bb += [IPrnt(res, c=str(self)), IPrnt(ROStr("\\n"), c="New line")]
     def get_modified(self, either=False):
         return self.expr.get_modified(either)
     def wellformed(self, st, defined):
@@ -489,20 +561,33 @@ class If:
         else :
             esym = SymTable()
         ep = ir.append_bb(epname)
+
         #Add phi nodes here
         #Unused phis will be removed later
-        for v in mod: #modified in both branch
+        for v in mod: #modified in either branch
             if v in tsym.modified and v not in tsym.d:
                 if v in mod_else:
                     tgt1 = mod_else[v] #the variable name before else modify it
                     tgt2 = esym.curr_ver(v)
-                else :
+                elif mod[v] is not None :
                     tgt1 = st.curr_ver(v) #variable not modified in else, just get its name
                     tgt2 = mod[v]
+                else :
+                    #mod[v] is None, this variable is only assigned in then and not before
+                    #No phi for this v, also we have to remove it from symbol table
+                    print("Unassign (if) %s" % v)
+                    st.unassign(v)
+                    continue
             else :
                 assert v in mod_else
-                tgt1 = mod[v]
-                tgt2 = esym.curr_ver(v)
+                if mod[v] is not None :
+                    tgt1 = mod[v]
+                    tgt2 = esym.curr_ver(v)
+                else :
+                    #same as before
+                    print("Unassign (if) %s" % v)
+                    st.unassign(v)
+                    continue
             nv = st.allocator.next_name(v)
             ep += [Phi(nv, tgt2b, tgt2, thenb.name, tgt1)]
             st.assign(v, nv)
@@ -552,12 +637,9 @@ class Loop:
         print(st)
 
         mod = self.do.get_modified(True)
-        print("XX %s" % mod)
         mod |= self.cond.get_modified(True)
-        print("XX2 %s" % mod)
         if self.post:
             mod |= self.post.get_modified(True)
-        print("XX3 %s" % mod)
 
         before = ir.last_bb
         prname = ir.next_name()
@@ -575,7 +657,6 @@ class Loop:
         st.cp_push() #create a checkpoint
         var_phi = {}
         pdfn = st.get_dfn()
-        print("SAD %s %s" % (pdfn, self))
         for v in mod&pdfn:
             var_phi[v] = st.allocator.next_name(v)
             st.assign(v, var_phi[v])
@@ -598,12 +679,15 @@ class Loop:
             body_end += [Br(0, None, prname, None)]
 
         prvar = {}
+        to_unassign = {}
         if self.cond_pos == 0: #pre
             emit_prologue()
             for v in var_phi:
                 prvar[v] = st.curr_ver(v)
             outbname = ir.last_bb.name
+            st.cp_push()
             emit_body()
+            to_unassign = st.cp_pop()
         else :
             emit_body()
             emit_prologue()
@@ -615,8 +699,6 @@ class Loop:
         phis = []
         pmod = st.cp_pop()
         assert set(pmod) == mod, "%s %s" % (pmod, mod)
-        print("VAR %s %s" % (var_phi, self))
-        print("PMOD %s %s" % (pmod, self))
         for v in pmod:
             if v not in var_phi:
                 continue
@@ -631,6 +713,10 @@ class Loop:
         for v in var_phi:
             #use the last version from prologue block
             st.assign(v, prvar[v])
+        for v in to_unassign:
+            if to_unassign[v] is None:
+                print("Unassign %s" % v)
+                st.unassign(v)
         epilogue = ir.append_bb(epname)
 
     def wellformed(self, st, defined):
@@ -649,7 +735,7 @@ class Loop:
             if self.cond_pos == 1:
                 assert self.cond.wellformed(st, defined)
         except AssertionError as e:
-            print(e)
+            logging.error(e)
             return False
         return True
     def get_modified(self, either=False):
@@ -663,7 +749,6 @@ class Loop:
                 res = res|self.post.get_modified(either)
         if self.pre :
             res = res|self.pre.get_modified(either)
-        print("%s %s %s" % (res, self, either))
         return res
 
 class Block:
@@ -676,6 +761,8 @@ class Block:
             if bb.br:
                 bb = ir.append_bb("Lend")
             bb += [Ret()]
+            bb = ir.append_bb("Lbound")
+            bb += [IPrnt(ROStr("Out-of-bound error, abort\\n")), Ret()]
 
     def wellformed(self, st, defined):
         if not self.symtable:
