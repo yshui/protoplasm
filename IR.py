@@ -689,7 +689,7 @@ class BB:
         else :
             pabb = [bbmap[pbb].availbb|{pbb} for pbb in self.preds]
             availbb_next = reduce(lambda x, y: x&y, pabb)
-        if availbb_next != self.availbb or not self.preds:
+        if availbb_next != self.availbb:
             for nbb in self.succs:
                 if nbb:
                     queue |= {nbb}
@@ -858,13 +858,14 @@ class IR:
         #the 'available' variable would than be all variable defined in available blocks
         init = set(self.bbmap.keys())
         for bb in self.bb:
-            if bb.preds:
-                bb.availbb = init
-        queue = set([bb.name for bb in self.bb if not bb.preds])
+            bb.availbb = init
+        queue = {self.bb[0].name}
         while queue :
             h = queue.pop()
             self.bbmap[h].avail_next(self.bbmap, queue)
         for bb in self.bb:
+            if not bb.preds:
+                bb.availbb = set()
             bb.avail_finish(self.bbmap)
 
     def calc_inout(self):
