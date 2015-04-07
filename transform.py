@@ -50,6 +50,68 @@ def branch_merge(ir):
     unset_log_phase()
     return (changed, nir)
 
+def phi_branch_removal(bb, br, varmap):
+    clear_phi = False
+    for i in bb.phis:
+        assert br in i.srcs
+        del i.srcs[br]
+        if len(i.srcs) == 1:
+            clear_phi = True
+            _, varmap[i.dst] = i.srcs.popitem()
+
+    if clear_phi:
+        bb.phis = []
+
+def prune_unreachable(ir):
+    set_log_phase("unreachable")
+    logging.info(ir)
+    queue = set([bb for bb in ir.bb if not bb.preds])
+    queue -= {ir.bb[0]}
+    removed = set(queue)
+    npredremoved = {}
+    for bb in ir.bb:
+        npredremoved[bb] = 0
+    while queue:
+        b = queue.pop()
+        logging.info("BB %s unreachable" % b.name)
+        for s in b.succs:
+            if s is None:
+                continue
+            ss = ir.bbmap[s]
+            npredremoved[ss] += 1
+            if len(ss.preds) <= npredremoved[ss] and ss not in removed:
+                queue |= {ss}
+                removed |= {ss}
+
+    if not removed:
+        unset_log_phase()
+        return (False, ir)
+
+    nir = IR()
+    for bb in ir.bb:
+        if bb not in removed:
+            nxbb = BB(bb.name, bb)
+            nir += [nxbb]
+
+    varmap = {}
+    for bb in removed:
+        for s in bb.succs:
+            if s is None:
+                continue
+            ss = ir.bbmap[s]
+            if ss in removed:
+                continue
+            phi_branch_removal(nir.bbmap[s], bb.name, varmap)
+
+    if varmap:
+        for bb in nir.bb:
+            for i in bb.ins+[bb.br]:
+                i.allocate(varmap)
+
+    nir.finish()
+    unset_log_phase()
+    return (True, nir)
+
 def prune_unused(ir):
     set_log_phase("prune")
     logging.info(ir)
@@ -59,9 +121,6 @@ def prune_unused(ir):
     #instructions doesn't produce a result is a *real* use of its operands
     #then we do reachability test from there
     for bb in ir.bb:
-        if not bb.preds and bb != ir.bb[0]:
-            logging.info("BB %s unreachable" % bb.name)
-            continue
         for i in bb.phis+bb.ins+[bb.br]:
             ds = i.get_dfn()
             if not ds:
@@ -73,6 +132,7 @@ def prune_unused(ir):
                 dfn_ins[d] = i
     while queue:
         d = queue.pop()
+        assert d in dfn_ins, d
         i = dfn_ins[d]
         if i.is_phi:
             u = _phi_get_used(i)
@@ -84,8 +144,6 @@ def prune_unused(ir):
     nir = IR()
     changed = False
     for bb in ir.bb:
-        if not bb.preds and bb != ir.bb[0]:
-            continue
         nbb = BB(bb.name)
         for i in bb.phis+bb.ins:
             ds = i.get_dfn()

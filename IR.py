@@ -121,7 +121,7 @@ class Var(BaseOpr):
         if not self.dst:
             assert self in dfn, "%s not defined" % self
         else :
-            assert self not in dfn
+            assert self not in dfn, self
     def get_dfn(self):
         assert self.dst
         return {self}
@@ -425,7 +425,7 @@ class Br(BaseIns):
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
-        logging.debug(regmap)
+        logging.debug(_str_dict(regmap))
         self.src = self.src.allocate(regmap)
     def get_dfn(self):
         return set()
@@ -627,6 +627,7 @@ class BB:
     def __str__(self):
         res = self.name+":\n"
         res += "#availbb: "+str(self.availbb)+"\n"
+        res += "#a_dfn: "+_str_set(self.a_dfn)+"\n"
         res += "#pred: "+str(self.preds)+"\n"
         res += "#succ: "+str(self.succs)+"\n"
         res += "#In: "+_str_set(self.In)+"\n"
@@ -688,7 +689,7 @@ class BB:
         else :
             pabb = [bbmap[pbb].availbb|{pbb} for pbb in self.preds]
             availbb_next = reduce(lambda x, y: x&y, pabb)
-        if availbb_next != self.availbb:
+        if availbb_next != self.availbb or not self.preds:
             for nbb in self.succs:
                 if nbb:
                     queue |= {nbb}
@@ -696,6 +697,7 @@ class BB:
 
     def avail_finish(self, bbmap):
         self.avail_done = True
+        self.a_dfn = set()
         for prevbb in self.availbb:
             pbb = bbmap[prevbb]
             self.a_dfn |= pbb.internal_dfn
@@ -768,7 +770,7 @@ class BB:
         #we can make sure all of the variables used in this bb
         #is always defined on all the paths leading to this bb
         self.validated = True
-        _dfn = copy.copy(self.a_dfn)
+        _dfn = set(self.a_dfn)
         #skip phi instructions, only get their defines
         #because phi instruction can grab a variable defined later in this bb
         for i in self.phis:
@@ -856,8 +858,9 @@ class IR:
         #the 'available' variable would than be all variable defined in available blocks
         init = set(self.bbmap.keys())
         for bb in self.bb:
-            bb.availbb = init
-        queue = {self.bb[0].name}
+            if bb.preds:
+                bb.availbb = init
+        queue = set([bb.name for bb in self.bb if not bb.preds])
         while queue :
             h = queue.pop()
             self.bbmap[h].avail_next(self.bbmap, queue)

@@ -575,7 +575,7 @@ class If:
                 else :
                     #mod[v] is None, this variable is only assigned in then and not before
                     #No phi for this v, also we have to remove it from symbol table
-                    print("Unassign (if) %s" % v)
+                    logging.debug("Unassign (if) %s" % v)
                     st.unassign(v)
                     continue
             else :
@@ -585,7 +585,7 @@ class If:
                     tgt2 = esym.curr_ver(v)
                 else :
                     #same as before
-                    print("Unassign (if) %s" % v)
+                    logging.debug("Unassign (if) %s" % v)
                     st.unassign(v)
                     continue
             nv = st.allocator.next_name(v)
@@ -634,7 +634,6 @@ class Loop:
         #emit pre
         if self.pre:
             self.pre.emit(st, ir)
-        print(st)
 
         mod = self.do.get_modified(True)
         mod |= self.cond.get_modified(True)
@@ -715,7 +714,7 @@ class Loop:
             st.assign(v, prvar[v])
         for v in to_unassign:
             if to_unassign[v] is None:
-                print("Unassign %s" % v)
+                logging.info("Unassign %s" % v)
                 st.unassign(v)
         epilogue = ir.append_bb(epname)
 

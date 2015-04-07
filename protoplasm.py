@@ -26,6 +26,7 @@ if __name__ == "__main__":
     logging.info("\n\nFisrt version of IR: ")
     ir.finish()
     logger.removeHandler(lhdlr)
+    _, ir = transform.prune_unreachable(ir)
     _, ir = transform.prune_unused(ir)
     _, ir = transform.variable_rename(ir)
     #changed = True
