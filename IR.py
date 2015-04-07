@@ -4,7 +4,7 @@ from functools import reduce
 import logging
 
 usable_reg = []
-for __i in range(0, 10):
+for __i in range(0, 2):
     usable_reg += ["t{0}".format(__i)]
 def gen_rvmap(*arg):
     #res = ""
@@ -19,7 +19,7 @@ def gen_rvmap(*arg):
         #return "  #"+res
     return ""
 
-class BassOpr:
+class BaseOpr:
     @property
     def is_reg(self):
         return isinstance(self, Register)
@@ -36,7 +36,7 @@ class BassOpr:
     def is_nil(self):
         return False
 
-class Cell(BassOpr):
+class Cell(BaseOpr):
     def __init__(self, off, base=None, var=None):
         if not base:
             self.base = Register("sp")
@@ -50,6 +50,8 @@ class Cell(BassOpr):
         if not isinstance(other, Cell):
             return False
         return self.off == other.off and self.base == other.base
+    def __hash__(self):
+        return str.__hash__(str(self))
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -63,7 +65,7 @@ class Cell(BassOpr):
         nbase = self.base.allocate(regmap)
         return Cell(self.off, base=nbase)
 
-class Register(BassOpr):
+class Register(BaseOpr):
     def __eq__(self, other):
         if not isinstance(other, Register):
             return False
@@ -85,7 +87,7 @@ class Register(BassOpr):
     def allocate(self, _):
         assert False, "Cannot allocate register for a register %s" % self
 
-class Imm(BassOpr):
+class Imm(BaseOpr):
     def __init__(self, number):
         assert isinstance(number, int)
         self.val = number
@@ -95,13 +97,19 @@ class Imm(BassOpr):
         assert False
     def __str__(self):
         return str(self.val)
+    def __hash__(self):
+        return str.__hash__("Imm(%s)" % self.val)
+    def __eq__(self, other):
+        if not isinstance(other, Imm):
+            return False
+        return self.val == other.val
     def get_used(self):
         return set()
     def allocate(self, _):
         return self
 
 
-class Var(BassOpr):
+class Var(BaseOpr):
     def __init__(self, var, dst=False):
         self.val = var
         self.dst = dst
@@ -151,18 +159,18 @@ class Nil:
         return self
 
 def get_operand(val, dst=False):
-    if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell):
+    if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell) or isinstance(val, Imm):
         if dst :
             assert (val.is_var and val.dst) or val.is_reg
         return val
     if dst :
-        assert isinstance(val, str)
+        assert isinstance(val, str), val
         assert val[0] == '%'
     if val is None :
         return Nil()
     if isinstance(val, int):
         return Imm(val)
-    assert isinstance(val, str)
+    assert isinstance(val, str), val
     if val[0] == '%':
         return Var(val[1:], dst)
     return Register(val)
@@ -182,9 +190,12 @@ class NIns(BaseIns):
         return self.dst.get_dfn()
 
 class Rename(NIns):
-    def __init__(self, dst, src):
+    def __init__(self, dst, src, c=""):
         self.dst = get_operand(dst, True)
         self.src = get_operand(src)
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
         assert self.src.is_var, src
         assert self.dst.is_var, dst
     def get_used(self):
@@ -197,7 +208,7 @@ class Rename(NIns):
         self.dst.validate(dfn)
         self.src.validate(dfn)
     def __str__(self):
-        return "%s = rename %s" % (self.dst, self.src)
+        return "%s = rename %s%s" % (self.dst, self.src, self.comment)
 
 
 class Arithm(NIns):
@@ -222,12 +233,15 @@ class Arithm(NIns):
         assert self.opr2.is_reg or self.opr2.is_imm
         return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
 
-    def __init__(self, op, dst, opr1, opr2):
+    def __init__(self, op, dst, opr1, opr2, c=None):
         assert op in self.opc
         self.op = self.opc[op]
         self.dst = get_operand(dst, True)
         self.opr1 = get_operand(opr1)
         self.opr2 = get_operand(opr2)
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
         if self.opr1.is_imm:
             if self.opr1.val == 0:
                 #use the 0 register
@@ -250,12 +264,15 @@ class Arithm(NIns):
     def __str__(self):
         res = "%s = %s, %s, %s" % (self.dst, self.opname[self.op], str(self.opr1), str(self.opr2))
         res += gen_rvmap(self.dst, self.opr1, self.opr2)
-        return res
+        return res+self.comment
     def get_used(self):
         return self.opr1.get_used()|self.opr2.get_used()
 
 class IInpt(NIns):
-    def __init__(self, dst):
+    def __init__(self, dst, c=None):
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
         if dst is None:
             self.dst = Nil()
         else :
@@ -267,17 +284,20 @@ class IInpt(NIns):
     def get_used(self):
         return set()
     def gencode(self):
-      out = "\tli $v0, 5\n\tsyscall\n"
-      if not self.dst.is_nil:
-          assert self.dst.is_reg
-          out += "\tadd %s, $v0, 0\n" % str(self.dst)
-      return out
+        out = "\tli $v0, 5\n\tsyscall\n"
+        if not self.dst.is_nil:
+            assert self.dst.is_reg
+            out += "\tadd %s, $v0, 0\n" % str(self.dst)
+        return out
     def __str__(self):
-      return "%s = input " % self.dst
+        return "%s = input%s" % (self.dst, self.comment)
 
 class IPrnt(NIns):
-    def __init__(self, var):
+    def __init__(self, var, c=None):
         self.var = get_operand(var)
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
     def validate(self, dfn):
         self.var.validate(dfn)
     def allocate(self, regmap):
@@ -285,7 +305,7 @@ class IPrnt(NIns):
     def get_dfn(self):
         return set()
     def __str__(self):
-        return "print %s" % self.var
+        return "print %s%s" % (self.var, self.comment)
     def get_used(self):
         return self.var.get_used()
     def gencode(self):
@@ -322,7 +342,7 @@ class Cmp(NIns):
             assert self.src1.is_reg, self.src1
             assert self.src2.is_reg or self.src2.is_imm
             return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.src1), str(self.src2))
-    def __init__(self, op, src1, src2, dst):
+    def __init__(self, op, src1, src2, dst, c=None):
         assert op in self.opc
         self.op = self.opc[op]
         self.src1 = get_operand(src1)
@@ -330,6 +350,9 @@ class Cmp(NIns):
         self.dst = get_operand(dst, True)
         self.is_phi = False
         self.is_br = False
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
     def allocate(self, regmap):
         rrr = _str_dict(regmap)
         print(rrr)
@@ -344,7 +367,7 @@ class Cmp(NIns):
         self.dst.validate(dfn)
     def __str__(self):
         res = "%s = cmp %s %s, %s" % (self.dst, self.opname[self.op], self.src1, self.src2)
-        return res
+        return res+self.comment
 
 class Br(BaseIns):
     '0 : j, 1 : beqz, 2 : bnez'
@@ -353,13 +376,16 @@ class Br(BaseIns):
             1 : "beqz",
             2 : "bnez",
     }
-    def __init__(self, op, src, target, target2):
+    def __init__(self, op, src, target, target2, c=None):
         self.src = get_operand(src)
         self.tgt = [target, target2]
         self.op = op
         self.is_br = True
         self.is_phi = False
         self.used = True
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
         if src is not None and self.src.is_imm:
             #static branch
             self.op = 0
@@ -397,7 +423,7 @@ class Br(BaseIns):
         else :
             res = "br %s [ %s ]" % (self.brname[self.op], self.tgt[0])
         res += gen_rvmap(self.src)
-        return res
+        return res+self.comment
 
 class Phi:
     def __init__(self, dst, *arg):
@@ -469,15 +495,18 @@ def get_stack_usage(ins):
     return -1
 
 class Load(NIns):
-    def __init__(self, dst, m):
+    def __init__(self, dst, m, c=None):
         self.dst = get_operand(dst, True)
         assert not self.dst.is_imm
         self.m = get_operand(m)
         assert self.m.is_mem or self.m.is_imm
         self.is_phi = False
         self.is_br = False
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
     def __str__(self):
-        return "%s = load %s" % (str(self.dst), str(self.m))
+        return "%s = load %s%s" % (self.dst, self.m, self.comment)
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
     def get_used(self):
@@ -488,11 +517,14 @@ class Load(NIns):
         self.dst.validate(dfn)
 
 class Store(NIns):
-    def __init__(self, dst, r):
+    def __init__(self, dst, r, c=None):
         self.dst = get_operand(dst)
         assert self.dst.is_mem
         self.r = get_operand(r)
         assert self.r.is_reg or self.r.is_var
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
     def allocate(self, regmap):
         self.r = self.r.allocate(regmap)
         self.dst = self.dst.allocate(regmap)
@@ -503,14 +535,17 @@ class Store(NIns):
     def get_used(self):
         return self.r.get_used()
     def __str__(self):
-        return "store %s, %s" % (str(self.dst), str(self.r))
+        return "store %s, %s%s" % (self.dst, self.r, self.comment)
 
 class Malloc(NIns):
-    def __init__(self, dst, size):
+    def __init__(self, dst, size, c=None):
         self.dst = get_operand(dst, True)
         assert self.dst.is_var or self.dst.is_reg
         self.size = get_operand(size)
         assert not self.size.is_mem
+        self.comment = ""
+        if c is not None :
+            self.comment = "\t#"+c
     def allocate(self, regmap):
         self.dst = self.dst.allocate(regmap)
         self.size = self.size.allocate(regmap)
@@ -520,10 +555,7 @@ class Malloc(NIns):
     def get_used(self):
         return self.size.get_used()
     def __str__(self):
-        return "%s = malloc %s" % (self.dst, self.size)
-    def allocate(self, regmap):
-        self.dst = self.dst.allocate(regmap)
-        self.size = self.size.allocate(regmap)
+        return "%s = malloc %s%s" % (self.dst, self.size, self.comment)
     def gencode(self):
         res = "\tli $v0, 9\n"
         if self.size.is_imm:
@@ -572,7 +604,7 @@ class BB:
             res += "\t"+str(i)+"\n"
         for i in self.ins:
             res += "\t"+str(i)+"\n"
-        res += "\t"+str(self.br)+"  #end\n"
+        res += "\t"+str(self.br)+"\t#end\n"
         res += "#Out: "+_str_set(self.out)+"\n"
         if self.out_reg:
             res += "#Out_reg: \n"

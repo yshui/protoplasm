@@ -421,11 +421,11 @@ def promote_replay(v, R, allocation):
         assert m, v
         assert m.is_mem
         if not e:
-            ret += [Store(m, r)]
+            ret += [Store(m, r, c="Demoting "+str(oldv))]
         R.demote(oldv, m)
     if v in R.M:
         m = R.M.vmmap[v]
-        ret += [Load(r, m)]
+        ret += [Load(r, m, c="Promoting "+str(v))]
         logging.info("Load %s(%s) -> %s" % (v, m, r))
     R.reserve(v, r)
     _dict_print(R.vrmap)
@@ -573,11 +573,8 @@ def gen_phi_block(bb, sbb, prmap):
             logging.info("Invalid case 1, %s has no reg, and %s's dst is %s" % (src, dst, dreg))
             return False
         #does dreg conflict with anything?
-        if dreg.is_reg and dreg in dsmap:
+        if dreg in dsmap:
             logging.info("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg]))
-            return False
-        if dreg.is_mem and dreg.off in dsmap:
-            logging.info("%s's dst %s is conflict with %s" % (dst, dreg, dsmap[dreg.off]))
             return False
         return True
 
@@ -585,6 +582,7 @@ def gen_phi_block(bb, sbb, prmap):
         nonlocal src_reg, src_mem, src_rcv, prmap, dsmap
         nonlocal todo
         dreg = prmap[dst]
+        assert dreg not in dsmap
         #first try register
         sreg = src_reg[src]
         smem = src_mem[src]
@@ -593,31 +591,26 @@ def gen_phi_block(bb, sbb, prmap):
             #writing to memory
             #must be from a register
             assert sreg
-            if dreg.off in dsmap:
-                #we overwrite something
-                src_mem[dsmap[dreg.off]] = None
-                del dsmap[dreg.off]
             #use this memory cell instead of the original
             #memory cell. Because a phi memory cell is guaranteed to not
             #have conflicts
-            if smem and smem.off in dsmap:
-                del dsmap[smem.off]
+            if smem in dsmap:
+                del dsmap[smem]
             src_mem[src] = dreg
-            ret = [Store(dreg, sreg)]
+            ret = [Store(dreg, sreg, c=("%s->%s" % (src, dst)))]
         else :
             #move/load into register
-            if dreg in dsmap:
-                #we are overwriting some src
-                src_reg[dsmap[dreg]] = None
-                del dsmap[dreg]
             #prefer phi register over original src register
             if sreg in dsmap:
                 del dsmap[sreg]
             src_reg[src] = dreg
             if sreg:
                 ret = [Arithm('+', dreg, sreg, 0)]
+            elif smem:
+                ret = [Load(dreg, smem, c=("%s->%s" % (src, dst)))]
             else :
-                ret = [Load(dreg, smem)]
+                #imm
+                ret = [Load(dreg, src, c=str(dst))]
         #one phi done, remove from src_rcv
         src_rcv[src] -= {dst}
         if not src_rcv[src]:
@@ -625,8 +618,8 @@ def gen_phi_block(bb, sbb, prmap):
             #so remove it from conflicts
             if sreg in dsmap:
                 del dsmap[sreg]
-            if smem and smem.off in dsmap:
-                del dsmap[smem.off]
+            if smem in dsmap:
+                del dsmap[smem]
             todo -= {src}
         return ret
     #do_move end
@@ -638,30 +631,27 @@ def gen_phi_block(bb, sbb, prmap):
         dreg = prmap[dst]
         logging.debug("PHI dst %s: %s" %(dst, dreg))
         src = i.srcs[bb.name]
-        if dreg.is_mem:
-            a_mem -= {dreg.off//4}
-        if src.is_imm:
-            continue
-        sreg = bb.out_reg[src]
         if src not in src_rcv:
             src_rcv[src] = {dst}
         else :
             src_rcv[src] |= {dst}
+        if dreg.is_mem:
+            a_mem -= {dreg.off//4}
+        if src.is_imm:
+            src_mem[src] = src_reg[src] = None
+            continue
+        sreg = bb.out_reg[src]
+        dsmap[sreg] = src
         if sreg.is_mem:
             src_mem[src] = sreg
             src_reg[src] = None
-            dsmap[sreg.off] = src
             a_mem -= {sreg.off//4}
-        else :
+        elif sreg.is_reg :
             src_mem[src] = None
             src_reg[src] = sreg
-            dsmap[sreg] = src
             nosrcreg -= {sreg}
         if sreg == dreg:
-            if dreg.is_mem:
-                del dsmap[sreg.off]
-            else :
-                del dsmap[sreg]
+            del dsmap[sreg]
             src_rcv[src] -= {dst}
             continue
     logging.info("Memory not used by any dst or src: %s" % a_mem)
@@ -671,49 +661,8 @@ def gen_phi_block(bb, sbb, prmap):
     nophiregs = set(all_reg)-phiregs
     todo = set([x for x in src_rcv if src_rcv[x]])
 
-    #step 0
-    #handle all imm srcs
-    s0ins = []
-    immmap = {}
-    tmpreg = False
-    for i in sbb.phis:
-        src = i.srcs[bb.name]
-        if not src.is_imm:
-            continue
-        if src.val not in immmap:
-            immmap[src.val] = set()
-        dreg = prmap[i.dst]
-        if dreg.is_mem:
-            tmpreg = True
-        immmap[src.val] |= {i.dst}
-    popcell = None
-    if nosrcreg:
-        tmpreg = next(iter(nosrcreg)) #we have a free reg, grab it any way
-        logging.info("Use %s for imm store" % tmpreg)
-    elif tmpreg:
-        popcell = Cell(next(iter(a_mem))*4)
-        tmpreg = next(iter(all_reg))
-        logging.info("Use %s for imm store, but back it up at %s" % (tmpreg, popcell))
-        s0ins.append(Store(popcell, tmpreg))
-    for val in immmap:
-        reg_set = False
-        for dst in immmap[val]:
-            dreg = prmap[dst]
-            if dreg.is_reg:
-                s0ins.append(Load(dreg, val))
-            else :
-                if not reg_set:
-                    s0ins.append(Load(tmpreg, val))
-                    reg_set = True
-                s0ins.append(Store(dreg, tmpreg))
-
-    s0tmpreg = tmpreg
-
     #step 1
-    #restore popcell used in step 0 first
     s1ins = []
-    if popcell:
-        s1ins.append(Load(tmpreg, popcell))
     #Real work is done here
     while todo:
         #First step, we only care register dsts
@@ -750,7 +699,7 @@ def gen_phi_block(bb, sbb, prmap):
                 mcell = Cell(a_mem.pop()*4)
                 src_mem[src] = mcell
                 src_reg[src] = None
-                s1ins.append(Store(mcell, creg))
+                s1ins.append(Store(mcell, creg, c=str(src)))
                 logging.info("Resolving conflict by %s(%s)->%s" % (src, creg, mcell))
             else :
                 #otherwise move to the free reg
@@ -767,7 +716,6 @@ def gen_phi_block(bb, sbb, prmap):
 
     end = Br(0, None, sbb.name, None)
     if not todo:
-        nbb += s0ins
         nbb += s1ins
         nbb += [end]
         return nbb
@@ -779,27 +727,19 @@ def gen_phi_block(bb, sbb, prmap):
     #is conflicts
 
     #we might need a temporary register
-    resolve_ins = s2ins
     popcell = None
     tmpreg = None
-    if s0tmpreg:
-        #tmpreg available during step 0 means we can use it and put all the
-        #conflict resolution in step 2 into step 0
-        logging.info("We have one tmpreg during step 0 (which is %s)" % tmpreg)
-        tmpreg = s0tmpreg
-        resolve_ins = s0ins
+    avail_reg = None
+    for x in nophiregs:
+        if x not in dsmap:
+            avail_reg = x
+            break
+    if not avail_reg:
+        popcell = Cell(a_mem.pop()*4)
+        tmpreg = Register("t0")
+        s2ins.append(Store(popcell, tmpreg, c="Use t0 as tmpreg"))
     else :
-        avail_reg = None
-        for x in nophiregs:
-            if x not in dsmap:
-                avail_reg = x
-                break
-        if not avail_reg:
-            popcell = Cell(a_mem.pop()*4)
-            tmpreg = Register("t0")
-            s2ins.append(Store(popcell, tmpreg))
-        else :
-            tmpreg = avail_reg
+        tmpreg = avail_reg
 
     logging.info("First phase done")
     while todo:
@@ -811,7 +751,10 @@ def gen_phi_block(bb, sbb, prmap):
             assert src_rcv[src], src
             for dst in src_rcv[src]:
                 dmem = prmap[dst]
-                if dmem.off in dsmap:
+                if dmem in dsmap:
+                    print("%s dst %s %s conflict with %s" % (src, dst, dmem, dsmap[dmem]))
+                    print(_str_set(todo))
+
                     flag = False
                     break
             if flag:
@@ -820,26 +763,28 @@ def gen_phi_block(bb, sbb, prmap):
         #otherwise we choose any one
         if not to_promote:
             for src in todo:
-                if src_mem[src].off in dsmap:
+                if src_mem[src] in dsmap:
                     to_promote = src
                     break
         assert to_promote
         _set_print(src_rcv[to_promote])
         pmem = src_mem[to_promote]
+        if not pmem:
+            pmem = to_promote #imm
         assert pmem, to_promote
-        resolve_ins.append(Load(tmpreg, pmem))
+        s2ins.append(Load(tmpreg, pmem, c="Promoting "+str(to_promote)))
         logging.info("promoting %s->%s to resolve conflicts" % (to_promote, tmpreg))
         done = set()
         for dst in src_rcv[to_promote]:
             dmem = prmap[dst]
-            if dmem.off in dsmap:
+            if dmem in dsmap:
                 continue
             logging.info("Storing %s(%s)->%s" % (tmpreg, to_promote, dmem))
-            resolve_ins.append(Store(dmem, tmpreg))
+            s2ins.append(Store(dmem, tmpreg, c=str(to_promote)+"->"+str(dst)))
             done |= {dst}
         src_rcv[to_promote] -= done
-        if pmem.off in dsmap:
-            del dsmap[pmem.off]
+        if pmem in dsmap:
+            del dsmap[pmem]
         if not src_rcv[to_promote]:
             #this to_promote is selected in first step
             #so no need to store it again
@@ -851,7 +796,7 @@ def gen_phi_block(bb, sbb, prmap):
             mcell = Cell(a_mem.pop()*4)
             src_mem[to_promote] = mcell
             logging.info("%s still have left overs, storing to %s" %(to_promote, mcell))
-            resolve_ins.append(Store(mcell, tmpreg))
+            s2ins.append(Store(mcell, tmpreg, c=str(to_promote)))
         pairs = [1]
         while bool(pairs):
             pairs = []
@@ -859,20 +804,19 @@ def gen_phi_block(bb, sbb, prmap):
                 if not src_reg[src]:
                     continue
                 for dst in src_rcv[src]:
-                    if prmap[dst].off not in dsmap:
+                    if prmap[dst] not in dsmap:
                         logging.info("New possible move %s(%s)->%s(%s)" % (src, src_reg[src], dst, prmap[dst]))
                         pairs.append((src, dst))
             for src, dst in pairs:
                 logging.info("reg to mem(%s, %s)" % (src,dst))
                 if src_reg[src] == tmpreg:
-                    s2ins.append(Load(tmpreg, popcell))
-                s2ins.append(Store(prmap[dst], src_reg[src]))
+                    s2ins.append(Load(tmpreg, popcell, c=str(src)))
+                s2ins.append(Store(prmap[dst], src_reg[src], c=("%s->%s" % (src, dst))))
                 src_rcv[src] -= {dst}
                 if not src_rcv[src]:
                     todo -= {src}
     if popcell:
-        s2ins.append(Load(tmpreg, popcell))
-    nbb += s0ins
+        s2ins.append(Load(tmpreg, popcell, c="Restore t0"))
     nbb += s1ins
     nbb += s2ins
     nbb += [end]
