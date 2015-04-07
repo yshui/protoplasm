@@ -35,6 +35,8 @@ class BaseOpr:
     @property
     def is_nil(self):
         return False
+    def get_rodata(self):
+        return set()
 
 class Cell(BaseOpr):
     def __init__(self, off, base=None, var=None):
@@ -157,6 +159,8 @@ class Nil:
         return set()
     def allocate(self, _):
         return self
+    def get_rodata(self):
+        return set()
 
 def get_operand(val, dst=False):
     if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell) or isinstance(val, Imm):
@@ -179,6 +183,8 @@ class BaseIns:
     last_use = None #Which variable is used the last time in this instructions
     def get_used(self):
         assert False, self
+    def get_rodata(self):
+        return set()
 
 class NIns(BaseIns):
     'Normal instructions, not end of basic block or phi'
@@ -292,9 +298,26 @@ class IInpt(NIns):
     def __str__(self):
         return "%s = input%s" % (self.dst, self.comment)
 
+class ROStr:
+    def __init__(self, s):
+        self.s = s
+    def validate(self, _):
+        return True
+    def allocate(self, _):
+        return self
+    def get_used(self):
+        return set()
+    def get_rodata(self):
+        return {self.s}
+    def __str__(self):
+        return "\"%s\"" % self.s
+
 class IPrnt(NIns):
     def __init__(self, var, c=None):
-        self.var = get_operand(var)
+        if not isinstance(var, ROStr):
+            self.var = get_operand(var)
+        else :
+            self.var = var
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
@@ -304,19 +327,23 @@ class IPrnt(NIns):
         self.var = self.var.allocate(regmap)
     def get_dfn(self):
         return set()
+    def get_rodata(self):
+        return self.var.get_rodata()
     def __str__(self):
         return "print %s%s" % (self.var, self.comment)
     def get_used(self):
         return self.var.get_used()
-    def gencode(self):
+    def gencode(self, ir):
         out = ""
+        if isinstance(self.var, ROStr):
+            out += "\tli $v0, 4\n\tla $a0, %s\n\tsyscall\n" % ir.rodata[self.var.s]
+            return out
         if self.var.is_reg:
             out += "\tadd $a0, %s, 0\n" % str(self.var)
         else :
             assert self.var.is_imm
             out += "\tli $a0, %s\n" % str(self.var)
         out += "\tli $v0, 1\n\tsyscall\n"
-        out += "\tli $v0, 4\n\tla $a0, nl\n\tsyscall\n"
         return out
 
 class Cmp(NIns):
@@ -331,7 +358,7 @@ class Cmp(NIns):
     }
     opc = {'==': 0, '<=': 1, '<' : 2, '>=': 3, '>' : 4, '!=': 5}
     iopc = {0: 0, 1: 4, 2: 3, 3: 2, 4: 1, 5: 5}
-    def gencode(self):
+    def gencode(self, _):
         assert self.dst.is_reg
         if self.src1.is_imm and self.src2.is_imm:
             assert False
@@ -465,6 +492,8 @@ class Phi:
         for x, y in self.srcs.items():
             res += "[ %s: %s ], " % (x, y)
         return res[:-2]
+    def get_rodata(self):
+        return set()
 
 def is_stack_pointer(r):
     if not r.is_reg:
@@ -511,7 +540,7 @@ class Load(NIns):
         self.dst = self.dst.allocate(regmap)
     def get_used(self):
         return set()
-    def gencode(self):
+    def gencode(self, _):
         return load_or_move(self.m, self.dst)
     def validate(self, dfn):
         self.dst.validate(dfn)
@@ -528,7 +557,7 @@ class Store(NIns):
     def allocate(self, regmap):
         self.r = self.r.allocate(regmap)
         self.dst = self.dst.allocate(regmap)
-    def gencode(self):
+    def gencode(self, _):
         return move_or_store(self.r, self.dst)
     def validate(self, dfn):
         self.r.validate(dfn)
@@ -556,7 +585,7 @@ class Malloc(NIns):
         return self.size.get_used()
     def __str__(self):
         return "%s = malloc %s%s" % (self.dst, self.size, self.comment)
-    def gencode(self):
+    def gencode(self, _):
         res = "\tli $v0, 9\n"
         if self.size.is_imm:
             res += "\tli $a0, %d\n" % (self.size.val)
@@ -586,6 +615,8 @@ class Ret:
         return set()
     def __str__(self):
         return "ret"
+    def get_rodata(self):
+        return set()
 
 class BB:
     '''
@@ -612,11 +643,11 @@ class BB:
                 res += str(k)+": "+str(v)+", "
             res += "\n"
         return res
-    def gencode(self, nextbb):
+    def gencode(self, ir, nextbb):
         res = self.name+":\n"
         assert not self.phis
         for i in self.ins:
-            res += i.gencode()
+            res += i.gencode(ir)
         res += self.br.gencode(nextbb)
         return res
     def __hash__(self):
@@ -644,6 +675,7 @@ class BB:
         self.required = set()
         self.dombb = set()
         self.stack_top = 0
+        self.rodata = set()
         if bb:
             self += bb.phis
             self += bb.ins
@@ -714,6 +746,7 @@ class BB:
                     self.succs = i.tgt
                 else :
                     self.ins.append(i)
+                    self.rodata |= i.get_rodata()
         return self
     @property
     def avail_dfn(self):
@@ -780,6 +813,8 @@ class IR:
         self.bbmap = {}
         self.namecnt = 0
         self.stack_top = 0
+        self.rodata = {}
+        self.rodatacnt = 0
 
     def __iadd__(self, o):
         for i in o:
@@ -788,6 +823,10 @@ class IR:
             self.bb.append(i)
             if i.stack_top > self.stack_top:
                 self.stack_top = i.stack_top
+            for d in i.rodata:
+                if d not in self.rodata:
+                    self.rodata[d] = "rodata%d" % self.rodatacnt
+                    self.rodatacnt += 1
         return self
 
     def next_name(self):
@@ -839,7 +878,10 @@ class IR:
 
     def gencode(self, fname):
         f = open(fname, 'w')
-        f.write(".data\nnl: .asciiz \"\\n\"\n")
+        f.write(".data\n")
+        for d, n in self.rodata.items():
+            assert isinstance(d, str)
+            f.write("%s: .asciiz \"%s\"\n" % (n, d))
         f.write(".text\nmain:\n")
         #shift the stack pointer
         if self.stack_top > 0:
@@ -849,7 +891,7 @@ class IR:
             nextbb = None
             if n+1 < numbb:
                 nextbb = self.bb[n+1].name
-            f.write(bb.gencode(nextbb))
+            f.write(bb.gencode(ir, nextbb))
         f.close()
     def finish(self):
         logging.debug(self)
