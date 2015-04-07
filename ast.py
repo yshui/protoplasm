@@ -2,23 +2,34 @@ from IR import IR, Phi, BB, Arithm, Br, IInpt, IPrnt, Cmp, Load, Ret, Malloc, St
 import copy
 import logging
 
+class Allocator:
+    def __init__(self):
+        self.ver = {}
+        self.ver[0] = -1
+    def next_name(self, prefix=None):
+        if prefix is None :
+            self.ver[0] += 1
+            return "%%%d" % self.ver[0]
+        prefix = str(prefix)
+        if prefix not in self.ver:
+            self.ver[prefix] = 0
+        else :
+            self.ver[prefix] += 1
+        return "%%%s.%d" % (prefix, self.ver[prefix])
+
 class SymTable:
     #this class is used to keep track of variable version
     #since we are using SSA here
     def __init__(self, dlist=None, prototype=None):
-        self.d = {}
-        self.nchild = {}
         self.t = {}
+        self.d = {}
         self.prototype = prototype
         self.modified = {}
         self.mstack = []
-        self.root = {}
-        self.d[0] = -1
         if prototype:
-            self.root[0] = self.prototype.root[0]
+            self.allocator = prototype.allocator
         else :
-            self.root[0] = self
-            self.nchild[0] = 0
+            self.allocator = Allocator()
         if dlist:
             for d in dlist:
                 for v in d.vlist:
@@ -52,57 +63,35 @@ class SymTable:
         return res
 
     def get_dfn(self): #get all possibly initialized variable
-        res = set([x for x in self.d if self.d[x] >= 0])
+        res = set([x for x in self.d if self.d[x] is not None])
         if self.prototype:
             res |= self.prototype.get_dfn()
         return res
 
-    def get_root(self, name):
-        if not self.prototype or name not in self.prototype:
-            if name in self.d:
-                return self
-            return None
-        return self.prototype.get_root(name)
-
     def new_var(self, name, t=None):
-        self.d[name] = -1
-        self.root[name] = self.get_root(name)
-        self.nchild[name] = 0
+        self.d[name] = None
         self.t[name] = t
-
-    def new_child(self, name):
-        assert self.root[name] == self
-        self.nchild[name] += 1
-        return self.nchild[name]-1
-
-    def build_name(self, name):
-        ver = self.d[name]
-        assert ver >= 0, "Uninitialized variable %s" % name
-        res = "%s.%d" % (name, ver)
-        if name == 0:
-            res = res[2:]
-        return "%"+res
 
     def is_initialized(self, name):
         if name in self.d:
-            return self.d[name] >= 0
+            return self.d[name] is not None
         assert self.prototype
         return self.prototype.is_initialized(name)
 
-    def next_ver(self, name):
-        assert isinstance(name, str) or name == 0
-        if name not in self.modified and self.is_initialized(name) and name != 0:
+    def assign(self, name, var):
+        assert isinstance(name, str)
+        if name not in self.modified and self.is_initialized(name):
             self.modified[name] = self.curr_ver(name)
         if name not in self.d:
-            return self.prototype.next_ver(name)
-        self.d[name] = self.root[name].new_child(name)
-        return self.build_name(name)
+            return self.prototype.assign(name, var)
+        self.d[name] = str(var)
 
     def curr_ver(self, name):
-        assert isinstance(name, str) or name == 0
+        assert isinstance(name, str)
         if name not in self.d:
+            assert self.prototype, name
             return self.prototype.curr_ver(name)
-        return self.build_name(name)
+        return str(self.d[name])
 
     def __str__(self):
         return "All: %s, modified: %s" % (self.d, self.modified)
@@ -129,32 +118,21 @@ class Expr:
     @property
     def is_constant(self):
         return False
-    def const_result(self, *_):
+    def get_result_const(self, *_):
         assert False
-    def noconst_emit(self, varv, ir, dst):
-        return None
-    def const_emit(self, varv, ir, dst):
-        assert self.is_constant
-        cdst = varv.next_ver(dst)
-        res = self.const_result(varv, ir)
-
-        bb = ir.last_bb
-        bb += [Load(cdst, res)]
-        return cdst
-    def emit(self, varv, ir, dst):
-        if self.is_constant:
-            self.const_emit(varv, ir, dst)
-        else :
-            self.noconst_emit(varv, ir, dst)
-    def get_result(self, varv, ir, noconst=False):
+    def get_result_noconst(self, *_):
+        assert False
+    def get_result(self, st, ir, noconst=False):
         assert isinstance(noconst, bool)
         if self.is_constant:
+            res = self.get_result_const(st, ir)
             if noconst:
-                return self.const_emit(varv, ir, 0)
-            else :
-                return self.const_result(varv, ir)
-        self.noconst_emit(varv, ir, 0)
-        return varv.curr_ver(0)
+                n = st.allocator.next_name()
+                bb = ir.last_bb
+                bb += [Load(n, res, c=str(self))]
+                return n
+            return res
+        return self.get_result_noconst(st, ir)
     def get_modified(self, _=False):
         return set()
 
@@ -165,19 +143,18 @@ class New(Expr):
     @property
     def is_constant(self):
         return False
-    def noconst_emit(self, st, ir, dst):
+    def get_result_noconst(self, st, ir):
         res = self.dim.size.get_result(st, ir, True)
-        ndst = st.next_ver(dst)
+        ndst = st.allocator.next_name()
         bb = ir.last_bb
         #calc (size+1) and (size+1)*4
-        szp1 = st.next_ver(0)
-        szp1m4 = st.next_ver(0)
+        szp1 = st.allocator.next_name()
+        szp1m4 = st.allocator.next_name()
         bb += [Arithm('+', szp1, res, 1), Arithm('*', szp1m4, szp1, 4)]
-        bb += [Malloc(ndst, szp1m4)]
+        bb += [Malloc(ndst, szp1m4, c=str(self))]
         #store the size of the array
-        print(ndst)
-        print(type(ndst))
         bb += [Store(Cell(0, base=ndst), res)]
+        return ndst
     def wellformed(self, st, defined):
         return self.dim.size.wellformed(st, defined)
     def get_modified(self, either):
@@ -196,25 +173,23 @@ class Inc(Expr):
     @property
     def is_constant(self):
         return False
-    def emit(self, varv, ir, dst=None):
-        opr = varv.curr_ver(self.lval.name)
-        bb = ir.last_bb
+    def emit(self, st, ir):
         opn = ['+', '-']
         if not self.res:
+            opr = st.curr_ver(self.lval.name)
             self.res = opr
-            cdst = varv.next_ver(self.lval.name)
-            bb += [Arithm(opn[self.op], cdst, opr, 1)]
+            cdst = st.allocator.next_name(self.lval.name)
+            bb = ir.last_bb
+            bb += [Arithm(opn[self.op], cdst, opr, 1, c=str(self))]
             if self.pos == 0: #pre
                 self.res = cdst
-        if dst:
-            dst = varv.next_ver(dst)
-            bb += [Arithm('+', dst, self.res, 0)]
-    def get_result(self, varv, ir, noconst=False):
-        self.emit(varv, ir)
+            st.assign(self.lval.name, cdst)
+    def get_result_noconst(self, st, ir):
+        self.emit(st, ir)
         return self.res
     def wellformed(self, st, dfn):
         return self.lval.wellformed(st, dfn)
-    def get_modified(self, either=False):
+    def get_modified(self, _=False):
         return {self.lval.name}
 
 class Asgn(Expr):
@@ -229,25 +204,17 @@ class Asgn(Expr):
     @property
     def is_constant(self):
         return self.rhs.is_constant
-    def const_result(self, varv, ir):
-        self.emit(varv, ir)
-        return self.rhs.const_result(varv, ir)
-    def emit(self, varv, ir, dst=None):
-        if not self.res:
-            self.rhs.emit(varv, ir, self.lhs.name)
-            self.res = varv.curr_ver(self.lhs.name)
-        if dst:
-            dst = varv.next_ver(dst)
-            bb = ir.last_bb
-            if self.is_constant:
-                bb += [Load(dst, self.rhs.const_result(varv, ir))]
-            else :
-                bb += [Arithm('+', dst, self.res, 0)]
-    def get_result(self, varv, ir, noconst=False):
-        if self.is_constant and not noconst:
-            return self.const_result(varv, ir)
-        self.emit(varv, ir)
+    def get_result_const(self, st, ir):
+        self.emit(st, ir)
+        return self.rhs.get_result_const(st, ir)
+    def get_result_noconst(self, st, ir):
+        self.emit(st, ir)
         return self.res
+    def emit(self, st, ir):
+        if not self.res:
+            v = self.rhs.get_result(st, ir, True)
+            self.res = v
+            st.assign(self.lhs.name, v)
     def wellformed(self, st, defined):
         if self.lhs.name not in st:
             logging.error("Undeclared variable '%s' used at line %d" % (self.lhs.name, self.linenum))
@@ -258,22 +225,23 @@ class Asgn(Expr):
         return {self.lhs.name}|self.rhs.get_modified(either)
 
 class UOP(Expr):
-    def noconst_emit(self, varv, ir, dst):
-        copr = self.opr.get_result(varv, ir)
+    def get_result_noconst(self, st, ir):
+        copr = self.opr.get_result(st, ir)
         bb = ir.last_bb
-        cdst = varv.next_ver(dst)
+        cdst = st.allocator.next_name()
         if self.op == '!':
-            bb += [Cmp('==', copr, 0, cdst)]
+            bb += [Cmp('==', copr, 0, cdst, c=str(self))]
         elif self.op == '-':
-            bb += [Arithm('-', cdst, copr, 0)]
+            bb += [Arithm('-', cdst, copr, 0, c=str(self))]
         else :
             assert False
+        return cdst
     @property
     def is_constant(self):
         return self.opr.is_constant
-    def const_result(self, varv, ir):
+    def get_result_const(self, st, ir):
         assert self.is_constant
-        oo = self.opr.const_result(varv, ir)
+        oo = self.opr.get_result_const(st, ir)
         if self.op == '!' :
             return not oo
         elif self.op == '-' :
@@ -292,8 +260,9 @@ class UOP(Expr):
         return self.opr.get_modified(either)
 
 class BinOP(Expr):
-    def noconst_emit(self, st, ir, dst):
+    def get_result_noconst(self, st, ir):
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
+        dst = st.allocator.next_name()
         if self.op not in {'&&', '||'}:
             if self.op in {'//', '%', '-'}:
                 #for these operators, we don't want the left to be constant
@@ -302,12 +271,12 @@ class BinOP(Expr):
                 lres = self.lopr.get_result(st, ir)
             rres = self.ropr.get_result(st, ir)
             bb = ir.last_bb
-            dst = st.next_ver(dst)
             if self.op in arithm:
-                bb += [Arithm(self.op, dst, lres, rres)]
+                bb += [Arithm(self.op, dst, lres, rres, c=str(self))]
             else :
-                bb += [Cmp(self.op, lres, rres, dst)]
-        elif self.op in {'&&', '||'}:
+                bb += [Cmp(self.op, lres, rres, dst, c=str(self))]
+            return dst
+        if self.op in {'&&', '||'}:
             #emit IR for left operand first
             #left, right might include assignment, so we need additional
             #phi nodes
@@ -323,7 +292,7 @@ class BinOP(Expr):
             #jump depending on the left operand.
             #for && jump to epilogue if left == 0
             #for || jump to epilogue if left != 0
-            bb += [Br(brop, lres, epname, roprbb.name)]
+            bb += [Br(brop, lres, epname, roprbb.name, c=str(self.lopr))]
 
             #emit IR for right operand
             #keep track of what's changed in right
@@ -335,27 +304,27 @@ class BinOP(Expr):
 
             bb = ir.append_bb(epname)
             for v in m:
-                rv = st.curr_ver(v)
-                nv = st.next_ver(v)
-                bb += [Phi(nv, prologue_name, m[v], roprbb.name, rv)]
+                nv = st.allocator.next_name(v)
+                bb += [Phi(nv, prologue_name, m[v], roprbb.name, st.curr_ver(v))]
+                st.assign(v, nv)
 
-            dst = st.next_ver(dst)
+            dst = st.allocator.next_name()
             #generate result
             #for &&, if we jump from prologue, result = 0, otherwise = right operand
             #for ||, if we jump from prologue result = left, otherwise = right
             if self.op == '&&':
                 lres = 0
             bb += [Phi(dst, prologue_name, lres, roprbb.name, rres)]
-        else :
-            assert False
+            return dst
+        assert False
 
     @property
     def is_constant(self):
         return self.lopr.is_constant and self.ropr.is_constant
-    def const_result(self, varv, ir):
+    def get_result_const(self, st, ir):
         assert self.is_constant
-        ll = self.lopr.const_result(varv, ir)
-        rr = self.ropr.const_result(varv, ir)
+        ll = self.lopr.const_result(st, ir)
+        rr = self.ropr.const_result(st, ir)
         if self.op not in {'&&', '||'} :
             return int(eval("%d %s %d" % (ll, self.op, rr)))
         elif self.op == '&&' :
@@ -390,16 +359,11 @@ class BinOP(Expr):
         return ldfn
 
 class Var(Expr):
-    def noconst_emit(self, varv, ir, dst):
-        src = varv.curr_ver(self.name)
-        dst = varv.next_ver(dst)
-        bb = ir.last_bb
-        bb += [Arithm('+', dst, src, 0)]
+    def get_result_noconst(self, st, ir):
+        return st.curr_ver(self.name)
     @property
     def is_constant(self):
         return False
-    def get_result(self, varv, ir, _=False):
-        return varv.curr_ver(self.name)
     def __init__(self, name, linenum=0):
         self.name = name
         self.linenum = linenum
@@ -417,12 +381,14 @@ class Var(Expr):
             logging.error("Variable '{0}' used before initialization, at line {1}".format(self.name, self.linenum))
             return False
         return True
+    def assign(self, st, ir, var):
+        st.assign(self.name, var)
 
 class Num(Expr):
     @property
     def is_constant(self):
         return True
-    def const_result(self, varv, ir):
+    def get_result_const(self, *_):
         return self.number
     def __str__(self):
         return "Num({0})".format(self.number)
@@ -437,7 +403,7 @@ class Num(Expr):
     def wellformed(self, _, __):
         return True
 
-class Inpt:
+class Inpt(Expr):
     @property
     def is_constant(self):
         return False
@@ -446,13 +412,11 @@ class Inpt:
     def __init__(self, linenum=0):
         self.linenum = linenum
         return
-    def emit(self, varv, ir, dst):
-        dst = varv.next_ver(dst)
+    def get_result_noconst(self, st, ir):
+        dst = st.allocator.next_name()
         bb = ir.last_bb
-        bb += [IInpt(dst)]
-    def get_result(self, varv, ir):
-        self.emit(varv, ir, 0)
-        return varv.curr_ver(0)
+        bb += [IInpt(dst, c=str(self))]
+        return dst
     def wellformed(self, _, __):
         return True
     def get_modified(self, _=False):
@@ -464,10 +428,10 @@ class Prnt:
     def __init__(self, expr, linenum=0):
         self.linenum = linenum
         self.expr = expr
-    def emit(self, varv, ir):
-        res = self.expr.get_result(varv, ir)
+    def emit(self, st, ir):
+        res = self.expr.get_result(st, ir)
         bb = ir.last_bb
-        bb += [IPrnt(res)]
+        bb += [IPrnt(res, c=str(self))]
     def get_modified(self, either=False):
         return self.expr.get_modified(either)
     def wellformed(self, st, defined):
@@ -499,9 +463,9 @@ class If:
         ebbname = ir.next_name()
         prologue = ir.last_bb
         if self.else_ :
-            prologue += [Br(1, res, ebbname, tbbname)]
+            prologue += [Br(1, res, ebbname, tbbname, c=str(self.cond))]
         else :
-            prologue += [Br(1, res, epname, tbbname)]
+            prologue += [Br(1, res, epname, tbbname, c=str(self.cond))]
 
         thenb = ir.append_bb(tbbname)
         self.then.emit(st, ir)
@@ -539,8 +503,9 @@ class If:
                 assert v in mod_else
                 tgt1 = mod[v]
                 tgt2 = esym.curr_ver(v)
-            nv = st.next_ver(v)
+            nv = st.allocator.next_name(v)
             ep += [Phi(nv, tgt2b, tgt2, thenb.name, tgt1)]
+            st.assign(v, nv)
 
     def wellformed(self, st, defined):
         try :
@@ -612,14 +577,15 @@ class Loop:
         pdfn = st.get_dfn()
         print("SAD %s %s" % (pdfn, self))
         for v in mod&pdfn:
-            var_phi[v] = st.next_ver(v)
+            var_phi[v] = st.allocator.next_name(v)
+            st.assign(v, var_phi[v])
 
         def emit_prologue():
             nonlocal prname, ir, prologue, st
             prologue = ir.append_bb(prname)
             res = self.cond.get_result(st, ir)
             prologue_end = ir.last_bb
-            prologue_end += [Br(1, res, epname, bname)]
+            prologue_end += [Br(1, res, epname, bname, c=str(self.cond))]
 
         def emit_body():
             nonlocal bname, ir, body, st
@@ -662,12 +628,10 @@ class Loop:
         else :
             body.phis = phis
 
-        epilogue = ir.append_bb(epname)
         for v in var_phi:
-            dst = st.next_ver(v)
-
             #use the last version from prologue block
-            epilogue += [Arithm('+', dst, prvar[v], 0)]
+            st.assign(v, prvar[v])
+        epilogue = ir.append_bb(epname)
 
     def wellformed(self, st, defined):
         try :
