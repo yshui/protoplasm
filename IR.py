@@ -34,7 +34,7 @@ class BaseOpr:
         return isinstance(self, Cell)
     @property
     def is_nil(self):
-        return False
+        return isinstance(self, Nil)
     def get_rodata(self):
         return set()
 
@@ -144,9 +144,9 @@ class Var(BaseOpr):
             return regmap[self]
         return self
 
-class Nil:
+class Nil(BaseOpr):
     def __init__(self, var=0, dst=0):
-        self.is_nil = True
+        pass
     def validate(self, dfn):
         return True
     def get_dfn(self):
@@ -160,8 +160,6 @@ class Nil:
         return set()
     def allocate(self, _):
         return self
-    def get_rodata(self):
-        return set()
 
 def get_operand(val, dst=False):
     if isinstance(val, Nil) or isinstance(val, Var) or isinstance(val, Register) or isinstance(val, Cell) or isinstance(val, Imm):
@@ -236,9 +234,13 @@ class Arithm(NIns):
             if self.opr2.val == 0 and self.opr1 == self.dst:
                 logging.info("%s is NOP" % self)
                 return ""
-        assert self.opr1.is_reg
+        opr1 = self.opr1
+        if opr1.is_imm:
+            assert opr1.val == 0
+            opr1 = Register("0")
+        assert opr1.is_reg
         assert self.opr2.is_reg or self.opr2.is_imm
-        return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
+        return "\t%s %s, %s, %s\n" % (self.opname[self.op], self.dst, opr1, self.opr2)
 
     def __init__(self, op, dst, opr1, opr2, c=None):
         assert op in self.opc
@@ -250,10 +252,7 @@ class Arithm(NIns):
         if c is not None :
             self.comment = "\t#"+c
         if self.opr1.is_imm:
-            if self.opr1.val == 0:
-                #use the 0 register
-                self.opr1 = Register("0")
-            elif self.op in {1, 3, 6, 7}:
+            if self.op in {1, 3, 6, 7}:
                 #swap opr1 and opr2 for +, *, &, |
                 self.opr1, self.opr2 = self.opr2, self.opr1
             else :
@@ -413,15 +412,6 @@ class Br(BaseIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-        if src is not None and self.src.is_imm:
-            #static branch
-            self.op = 0
-            bv = self.src.val
-            self.src = Nil()
-            if (bv == 0 and op == 1) or (bv != 0 and op == 2):
-                self.tgt = [target, None]
-            else :
-                self.tgt = [target2, None]
     def validate(self, dfn):
         self.src.validate(dfn)
     def allocate(self, regmap):
@@ -604,6 +594,7 @@ class Ret:
         self.is_br = True
         self.is_phi = False
         self.tgt = [None, None]
+        self.src = Nil()
     def allocate(self, _):
         return
     def gencode(self, nextbb):
@@ -763,12 +754,11 @@ class BB:
         for i in self.phis+self.ins:
             self.in_dfn |= i.get_dfn()
         return self.in_dfn
-    def finish(self):
-        assert self.br
     def validate(self, bbmap):
         #with the help of available dfn
         #we can make sure all of the variables used in this bb
         #is always defined on all the paths leading to this bb
+        assert self.br
         self.validated = True
         _dfn = set(self.a_dfn)
         #skip phi instructions, only get their defines
@@ -818,6 +808,7 @@ class IR:
         self.stack_top = 0
         self.rodata = {}
         self.rodatacnt = 0
+        self.finished = False
 
     def __iadd__(self, o):
         for i in o:
@@ -899,9 +890,8 @@ class IR:
             f.write(bb.gencode(self, nextbb))
         f.close()
     def finish(self):
+        self.finished = True
         logging.debug(self)
-        for bb in self.bb:
-            bb.finish()
         self.calc_connections()
         self.calc_avail()
         logging.info(self)

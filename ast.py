@@ -56,7 +56,27 @@ class SymTable:
                     self.modified[v] = m[v]
         else :
             self.modified = {}
-        return m
+        ret = {}
+        for v in m:
+            ret[v] = (self.curr_ver(v), m[v])
+        return ret
+
+    def cp_revert(self):
+        #revert to last check point
+        m = self.modified
+        self.modified = {}
+        ret = {}
+        for v in m:
+            ret[v] = (self.curr_ver(v), m[v])
+            if m[v] is not None:
+                self.assign(v, m[v])
+            else :
+                self.unassign(v)
+        if self.mstack:
+            self.modified = self.mstack.pop()
+        else :
+            self.modified = {}
+        return ret
 
     def get_dclr(self):
         res = set(self.d.keys())
@@ -317,12 +337,15 @@ class BinOP(Expr):
             rres = self.ropr.get_result(st, ir)
             bb = ir.last_bb
             bb += [Br(0, None, epname, None)]
-            m = st.cp_pop()
+            m = st.cp_revert()
 
             bb = ir.append_bb(epname)
             for v in m:
+                newv, oldv = m[v]
+                if oldv is None :
+                    continue
                 nv = st.allocator.next_name(v)
-                bb += [Phi(nv, prologue_name, m[v], roprbb.name, st.curr_ver(v))]
+                bb += [Phi(nv, prologue_name, oldv, roprbb.name, newv)]
                 st.assign(v, nv)
 
             dst = st.allocator.next_name()
@@ -367,7 +390,11 @@ class BinOP(Expr):
         else :
             self.op = "//"
     def wellformed(self, st, defined):
-        return self.lopr.wellformed(st, defined) and self.ropr.wellformed(st, defined)
+        ret = self.lopr.wellformed(st, defined)
+        if not ret:
+            return False
+        defined = defined|self.lopr.get_modified()
+        return self.ropr.wellformed(st, defined)
     def get_modified(self, either=False):
         ldfn = self.lopr.get_modified(either)
         rdfn = self.ropr.get_modified(either)
@@ -544,6 +571,7 @@ class If:
         thenb = ir.last_bb
         thenb += [Br(0, None, epname, None)]
         tgt2b = prologue.name
+        mod_then = st.cp_revert()
 
         st.cp_push()
         if self.else_ :
@@ -553,40 +581,27 @@ class If:
             elseb += [Br(0, None, epname, None)]
             tgt2b = elseb.name
 
-        mod_else = st.cp_pop()
-        mod = st.cp_pop()
-        tsym = self.then.symtable
-        if self.else_:
-            esym = self.else_.symtable
-        else :
-            esym = SymTable()
+        mod_else = st.cp_revert()
         ep = ir.append_bb(epname)
 
         #Add phi nodes here
         #Unused phis will be removed later
-        for v in mod: #modified in either branch
-            if v in tsym.modified and v not in tsym.d:
+        tmp = set(mod_then)|set(mod_else)
+        for v in tmp: #modified in either branch
+            if v in mod_then:
                 if v in mod_else:
-                    tgt1 = mod_else[v] #the variable name before else modify it
-                    tgt2 = esym.curr_ver(v)
-                elif mod[v] is not None :
-                    tgt1 = st.curr_ver(v) #variable not modified in else, just get its name
-                    tgt2 = mod[v]
+                    tgt1 = mod_then[v][0]
+                    tgt2 = mod_else[v][0]
                 else :
-                    #mod[v] is None, this variable is only assigned in then and not before
-                    #No phi for this v, also we have to remove it from symbol table
-                    logging.debug("Unassign (if) %s" % v)
-                    st.unassign(v)
-                    continue
+                    tgt1, tgt2 = mod_then[v]
+                    if tgt2 is None :
+                        #no need to unassign
+                        #v is already unassigned in cp_revert
+                        continue
             else :
                 assert v in mod_else
-                if mod[v] is not None :
-                    tgt1 = mod[v]
-                    tgt2 = esym.curr_ver(v)
-                else :
-                    #same as before
-                    logging.debug("Unassign (if) %s" % v)
-                    st.unassign(v)
+                tgt2, tgt1 = mod_else[v]
+                if tgt1 is None :
                     continue
             nv = st.allocator.next_name(v)
             ep += [Phi(nv, tgt2b, tgt2, thenb.name, tgt1)]
@@ -677,46 +692,40 @@ class Loop:
             body_end = ir.last_bb
             body_end += [Br(0, None, prname, None)]
 
-        prvar = {}
-        to_unassign = {}
+        mod_body = {}
         if self.cond_pos == 0: #pre
             emit_prologue()
-            for v in var_phi:
-                prvar[v] = st.curr_ver(v)
-            outbname = ir.last_bb.name
             st.cp_push()
             emit_body()
-            to_unassign = st.cp_pop()
+            mod_body = st.cp_revert()
         else :
             emit_body()
             emit_prologue()
-            for v in var_phi:
-                prvar[v] = st.curr_ver(v)
-            outbname = ir.last_bb.name
         lbname = ir.last_bb.name
 
-        phis = []
-        pmod = st.cp_pop()
-        assert set(pmod) == mod, "%s %s" % (pmod, mod)
-        for v in pmod:
-            if v not in var_phi:
-                continue
-            i = Phi(var_phi[v], before.name, pmod[v], lbname, st.curr_ver(v))
-            phis.append(i)
+        print("!!"+str(st))
+        mod_prologue = st.cp_pop()
+        print("!?"+str(st))
+        tmp = set(mod_prologue)|set(mod_body)
+        assert tmp == mod, "body: %s prologue: %s %s" % (mod_body, mod_prologue, mod)
 
         if self.cond_pos == 0:
-            prologue.phis = phis
+            phis = prologue.phis
         else :
-            body.phis = phis
+            phis = body.phis
+        for v in tmp:
+            if v not in var_phi:
+                continue
+            newv, oldv = mod_prologue[v]
+            if v in mod_body:
+                newv = mod_body[v][0]
+            if oldv is not None :
+                i = Phi(var_phi[v], before.name, oldv, lbname, newv)
+                phis.append(i)
 
-        for v in var_phi:
-            #use the last version from prologue block
-            st.assign(v, prvar[v])
-        for v in to_unassign:
-            if to_unassign[v] is None:
-                logging.info("Unassign %s" % v)
-                st.unassign(v)
-        epilogue = ir.append_bb(epname)
+        print(st)
+
+        ir.append_bb(epname)
 
     def wellformed(self, st, defined):
         try :

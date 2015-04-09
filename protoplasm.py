@@ -13,7 +13,7 @@ if __name__ == "__main__":
     lhdlr = logging.StreamHandler(stream=sys.stderr)
     logger.addHandler(lhdlr)
     res = parser.parse(f.read(), debug=logger)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     logging.info(res)
     wf = res.wellformed(None, set())
     logging.info(wf)
@@ -25,16 +25,20 @@ if __name__ == "__main__":
     res.emit(None, ir)
     logging.info("\n\nFisrt version of IR: ")
     ir.finish()
+    logging.info(ir);
     logger.removeHandler(lhdlr)
-    _, ir = transform.prune_unreachable(ir)
+    changed, ir = transform.static_branch_removal(ir)
+    if not changed:
+        _, ir = transform.prune_unreachable(ir)
     _, ir = transform.prune_unused(ir)
+    _, ir = transform.block_coalesce(ir)
     _, ir = transform.variable_rename(ir)
     #changed = True
     #while changed:
     _, ir = transform.allocate(ir)
     _, ir = transform.jump_block_removal(ir)
     _, ir = transform.branch_merge(ir)
-    _, ir = transform.block_coalesce(ir)
+    _, ir = transform.block_coalesce(ir, 1)
     outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
     logger.addHandler(lhdlr)
     logging.info("\n\nAfter register allocation:")

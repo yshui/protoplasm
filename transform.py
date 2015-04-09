@@ -1,4 +1,4 @@
-from IR import IR, BB, Arithm, Phi, Var, Cell, IInpt, IPrnt, Load, Store, Br, Rename, Register, all_reg
+from IR import IR, BB, Arithm, Phi, Var, Cell, Nil, IInpt, IPrnt, Load, Store, Br, Rename, Register, all_reg
 from collections import deque
 from utils import _set_print, _dict_print, _str_dict, _str_set, link, get_father
 from storage_models import Memory, Registers
@@ -54,6 +54,7 @@ def phi_branch_removal(bb, br, varmap):
     clear_phi = False
     for i in bb.phis:
         assert br in i.srcs
+        logging.info("Removing %s from %s" % (br, i))
         del i.srcs[br]
         if len(i.srcs) == 1:
             clear_phi = True
@@ -62,31 +63,93 @@ def phi_branch_removal(bb, br, varmap):
     if clear_phi:
         bb.phis = []
 
+def remap_all_uses(varmap, ir):
+    logging.info(_str_dict(varmap))
+    def getmap(v):
+        nonlocal varmap
+        if v not in varmap:
+            return v
+        varmap[v] = getmap(varmap[v])
+        return varmap[v]
+    if varmap:
+        for v in varmap:
+            getmap(v)
+        logging.info(_str_dict(varmap))
+        for bb in ir.bb:
+            for i in bb.ins+[bb.br]:
+                i.allocate(varmap)
+            for i in bb.phis:
+                for pred in i.srcs:
+                    if i.srcs[pred] in varmap:
+                        i.srcs[pred] = varmap[i.srcs[pred]]
+
+def static_branch_removal(ir):
+    #remove all br with constant condition
+    set_log_phase("static")
+    nir = IR()
+    for bb in ir.bb:
+        nxbb = BB(bb.name, bb)
+        nir += [nxbb]
+    varmap = {}
+    changed = False
+    for bb in nir.bb:
+        if bb.br.src is None:
+            continue
+        if not bb.br.src.is_imm:
+            continue
+        #static branch
+        logging.info("Static branch %s from %s" % (bb.br, bb.name))
+        changed = True
+        op = bb.br.op
+        bb.br.op = 0
+        bv = bb.br.src.val
+        bb.br.src = Nil()
+        if (bv == 0 and op == 1) or (bv != 0 and op == 2):
+            to_delete = bb.br.tgt[1]
+        else :
+            to_delete = bb.br.tgt[0]
+            bb.br.tgt[0] = bb.br.tgt[1]
+        bb.br.tgt[1] = None
+        logging.info("Changed to %s" % bb.br)
+        phi_branch_removal(nir.bbmap[to_delete], bb.name, varmap)
+
+    if not changed:
+        unset_log_phase()
+        return (False, ir)
+
+    remap_all_uses(varmap, nir)
+    nir.calc_connections()
+    logging.info(nir)
+    unset_log_phase()
+    _, nir = prune_unreachable(nir)
+    return (True, nir)
+
 def prune_unreachable(ir):
     set_log_phase("unreachable")
     logging.info(ir)
-    queue = set([bb for bb in ir.bb if not bb.preds])
-    queue -= {ir.bb[0]}
-    removed = set(queue)
-    npredremoved = {}
-    for bb in ir.bb:
-        npredremoved[bb] = 0
+    queue = {ir.bb[0]}
+    logging.info("BB[0] %s is always reachable", ir.bb[0].name)
+    removed = set(ir.bb[1:])
     while queue:
         b = queue.pop()
-        logging.info("BB %s unreachable" % b.name)
         for s in b.succs:
             if s is None:
                 continue
             ss = ir.bbmap[s]
-            npredremoved[ss] += 1
-            if len(ss.preds) <= npredremoved[ss] and ss not in removed:
+            if ss in removed:
+                logging.info("BB %s is reachable", ss.name)
+                removed -= {ss}
                 queue |= {ss}
-                removed |= {ss}
 
     if not removed:
+        if not ir.finished:
+            ir.finish()
         unset_log_phase()
         return (False, ir)
 
+    logging.info("Unreachable BBs:")
+    for bb in removed:
+        logging.info("* %s", bb.name)
     nir = IR()
     for bb in ir.bb:
         if bb not in removed:
@@ -98,16 +161,13 @@ def prune_unreachable(ir):
         for s in bb.succs:
             if s is None:
                 continue
-            ss = ir.bbmap[s]
-            if ss in removed:
+            if ir.bbmap[s] in removed:
                 continue
             phi_branch_removal(nir.bbmap[s], bb.name, varmap)
 
-    if varmap:
-        for bb in nir.bb:
-            for i in bb.ins+[bb.br]:
-                i.allocate(varmap)
+    remap_all_uses(varmap, nir)
 
+    logging.info(nir)
     nir.finish()
     unset_log_phase()
     return (True, nir)
@@ -184,35 +244,46 @@ def jump_block_removal(ir):
         unset_log_phase()
         return (False, ir)
     nir = IR()
+    b0 = get_father(ir.bb[0].name, jmap)
+    logging.info("Entry BB is now %s", b0)
+    nbb = BB(b0, ir.bbmap[b0])
+    def redir(br):
+        for x in range(0, 2):
+            oldtgt = br.tgt[x]
+            if not oldtgt:
+                continue
+            br.tgt[x] = get_father(oldtgt, jmap)
+            logging.info("Redirect %s to %s" % (oldtgt, br.tgt[x]))
+    redir(nbb.br)
+    nir += [nbb]
     for bb in ir.bb:
         rdir = get_father(bb.name, jmap)
         if rdir != bb.name:
             continue
+        if bb.name == b0:
+            continue
         nbb = BB(bb.name, bb)
-        for x in range(0, 2):
-            oldtgt = nbb.br.tgt[x]
-            if not oldtgt:
-                continue
-            nbb.br.tgt[x] = get_father(oldtgt, jmap)
-            logging.info("Redirect %s to %s" % (oldtgt, nbb.br.tgt[x]))
+        redir(nbb.br)
         nir += [nbb]
+    logging.info(nir)
     nir.finish()
     unset_log_phase()
     return (True, nir)
 
-def block_coalesce(ir):
-    set_log_phase("bc")
+def block_coalesce(ir, count=0):
+    set_log_phase("bc"+str(count))
     logging.info(ir)
     removed = set()
     nir = IR()
+    brmap = {}
     for bb in ir.bb:
         #if a is b's only succ, b is a's only pred
         #append a to b
         #we need to rebuild the fallthrough chain
         if bb.name in removed:
             continue
-        assert not bb.phis
         nxbb = BB(bb.name)
+        nxbb += bb.phis
         nxbb += bb.ins
         now = bb
         while not now.succs[1]:
@@ -220,17 +291,35 @@ def block_coalesce(ir):
             if not succ:
                 break
             succ = ir.bbmap[succ]
-            assert not succ.phis
-            if len(succ.preds) != 1:
+            if len(succ.preds) != 1 or succ == ir.bb[0]:
+                #bb[0] has an implicit predecessor
                 break
+            assert not succ.phis
             logging.info("%s <-> %s is one to one, remove %s" % (succ.name, now.name, succ.name))
             nxbb += succ.ins
             removed |= {succ.name}
             now = succ
+        if now != bb:
+            brmap[now.name] = bb.name
         nxbb += [now.br]
         #assert bb.name in set(succ.preds)
         nir += [nxbb]
+
+    map_needed = set(brmap)
+    for bb in nir.bb:
+        for i in bb.phis:
+            ps = set(i.srcs)
+            ps &= map_needed
+            if ps:
+                logging.info("Change %s to...", i)
+                for p in ps:
+                    v = i.srcs[p]
+                    i.del_source(p)
+                    i.set_source(brmap[p], v)
+                logging.info("...%s", i)
+
     nir.finish()
+    logging.info(nir)
 
     if not removed:
         logging.info("Block coalesce done, no changes")
@@ -611,6 +700,7 @@ def allocate(ir):
             nir += [nbb]
         logging.info(bb.name)
     nir.finish()
+    logging.info(nir)
     unset_log_phase()
     return (True, nir)
 
