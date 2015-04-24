@@ -15,6 +15,8 @@ reserved = {
    'false' : 'FALSE',
    'int' : 'INT',
    'bool' : 'BOOL',
+   'void' : 'VOID',
+   'return' : 'RETURN'
 }
 
 tokens = ['LPAREN', 'RPAREN', 'ASSIGN', 'NOT', 'PLUS', 'MINUS', 'MULTIPLY', 'DIVIDE', 'MODULO', 'AND', 'OR', 'EQ', 'NEQ',

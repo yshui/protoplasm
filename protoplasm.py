@@ -1,6 +1,9 @@
 from parser import parser
-from IR import IR
-import transform
+from IR.mod import IR
+from transform import apply_all
+import transform.basic as btf
+import transform.machine as mtf
+from transform.allocation import allocate
 import sys
 import logging
 import re
@@ -15,30 +18,31 @@ if __name__ == "__main__":
     res = parser.parse(f.read(), debug=logger)
     logger.setLevel(logging.INFO)
     logging.info(res)
-    wf = res.wellformed(None, set())
+    wf = res.wellformed()
     logging.info(wf)
+    print(wf)
     if not wf:
         logging.error("Program not wellformed")
         sys.exit(1)
-    ir = IR()
-    ir.append_bb(None)
-    res.emit(None, ir)
+    ir = res.emit()
     logging.info("\n\nFisrt version of IR: ")
+    print(ir)
     ir.finish()
-    logging.info(ir);
+    logging.info(ir)
     logger.removeHandler(lhdlr)
-    changed, ir = transform.static_branch_removal(ir)
-    if not changed:
-        _, ir = transform.prune_unreachable(ir)
-    _, ir = transform.prune_unused(ir)
-    _, ir = transform.block_coalesce(ir)
-    _, ir = transform.variable_rename(ir)
+    _, ir = apply_all(ir, btf.sbr_and_unreachable)
+    _, ir = apply_all(ir, btf.prune_unused)
+    _, ir = apply_all(ir, btf.block_coalesce)
+    _, ir = apply_all(ir, btf.variable_rename)
     #changed = True
     #while changed:
-    _, ir = transform.allocate(ir)
-    _, ir = transform.jump_block_removal(ir)
-    _, ir = transform.branch_merge(ir)
-    _, ir = transform.block_coalesce(ir, 1)
+    _, ir = apply_all(ir, allocate)
+    _, ir = apply_all(ir, mtf.return_value)
+    _, ir = apply_all(ir, mtf.local_stack_alloc)
+    _, ir = apply_all(ir, mtf.save_registers)
+    _, ir = apply_all(ir, mtf.jump_block_removal)
+    _, ir = apply_all(ir, mtf.branch_merge)
+    _, ir = apply_all(ir, btf.block_coalesce)
     outf = re.sub(r'\.[^.]*$', '.asm', sys.argv[1])
     logger.addHandler(lhdlr)
     logging.info("\n\nAfter register allocation:")

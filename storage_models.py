@@ -1,10 +1,13 @@
-from IR import Cell, Var, Register, Load, Store, all_reg, is_stack_pointer
+from IR.operand import Cell, Var, Register
+from IR.instruction import Load, Store
+from IR.machine import all_reg
 from collections import OrderedDict
 from utils import _str_dict
 import logging
 class Registers:
     def __init__(self, M=None):
         self.avail_reg = OrderedDict([(x, 1) for x in all_reg])
+        self.usable_reg = set(all_reg)|set([Register("a%d" % n) for n in range(0, 3)])
         assert self.avail_reg, "No available register found!!"
         self.vrmap = {}
         self.rvmap = OrderedDict() #ordered dict to support LRU
@@ -23,12 +26,14 @@ class Registers:
     def reserve(self, var, reg):
         if reg.is_reg:
             assert reg not in self.rvmap
-            assert reg in self.avail_reg, (str(reg), _str_dict(self.avail_reg))
+            assert reg in self.usable_reg, (str(reg), _str_dict(self.avail_reg))
             var = Var(var.val)
             self.vrmap[var] = reg
             reg = Register(reg.val)
             self.rvmap[reg] = var
-            del self.avail_reg[reg]
+            if reg in self.avail_reg:
+                del self.avail_reg[reg]
+            self.usable_reg -= {reg}
         else :
             assert reg.is_mem
             assert var not in self.M
@@ -49,6 +54,7 @@ class Registers:
         reg = self.vrmap[var]
         del self.vrmap[var]
         self.avail_reg[reg] = 1
+        self.usable_reg |= {reg}
         assert reg in self.rvmap, reg
         del self.rvmap[reg]
     def drop(self, o):
@@ -132,10 +138,10 @@ class Memory:
             res += "%d, " % m
         return res
     def reserve(self, var, pos):
-        logging.debug("Reserve %s -> %s" % (var, pos))
+        logging.debug("Reserve %s -> %s", var, pos)
         assert pos.is_mem
         assert pos.off % 4==0
-        assert is_stack_pointer(pos.base)
+        assert pos.base == Register("sp")
         pos = pos.off//4
         assert pos not in self.mvmap, "%s %s %s" % (var, pos, self.mvmap[pos])
         var = Var(var.val)
