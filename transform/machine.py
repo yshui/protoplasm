@@ -2,8 +2,9 @@
 import IR.instruction as IRI
 import IR.mod as mod
 import IR.operand as opr
-import utils
+from utils import _str_set, _str_dict, get_father, link
 import logging
+from . import set_log_phase, unset_log_phase
 callee_saved = set([opr.Register("s%d" % i) for i in range(0, 10)])
 def jump_block_removal(func, fmap):
 #    set_log_phase("jbr"+func.name)
@@ -20,12 +21,12 @@ def jump_block_removal(func, fmap):
             continue
         changed = True
         logging.info("Link %s -> %s", bb.name, bb.br.tgt[0])
-        utils.link(bb.br.tgt[0], bb.name, jmap)
+        link(bb.br.tgt[0], bb.name, jmap)
     if not changed:
         #unset_log_phase()
         return (False, func)
     nfn = mod.Func(func.name, func.param, func.rety)
-    b0 = utils.get_father(func.bb[0].name, jmap)
+    b0 = get_father(func.bb[0].name, jmap)
     logging.info("Entry BB is now %s", b0)
     nbb = mod.BB(b0, func.bbmap[b0])
     def redir(br):
@@ -33,12 +34,12 @@ def jump_block_removal(func, fmap):
             oldtgt = br.tgt[x]
             if not oldtgt:
                 continue
-            br.tgt[x] = utils.get_father(oldtgt, jmap)
+            br.tgt[x] = get_father(oldtgt, jmap)
             logging.info("Redirect %s to %s", oldtgt, br.tgt[x])
     redir(nbb.br)
     nfn += [nbb]
     for bb in func.bb:
-        rdir = utils.get_father(bb.name, jmap)
+        rdir = get_father(bb.name, jmap)
         if rdir != bb.name:
             continue
         if bb.name == b0:
@@ -118,6 +119,7 @@ def local_stack_alloc(func, fmap):
 
 def save_registers(func, fmap):
     #must be called after local_stack_alloc
+    set_log_phase("save_reg"+func.name)
     reg_changed = {}
     self_reg_changed = {}
     for bb in func.bb:
@@ -125,12 +127,12 @@ def save_registers(func, fmap):
         for i in bb.ins:
             if isinstance(i, IRI.Invoke):
                 self_reg_changed[bb.name] |= {opr.Register("ra")}
-            else :
-                self_reg_changed[bb.name] |= i.get_dfn()&callee_saved
+            self_reg_changed[bb.name] |= i.get_dfn()&callee_saved
         reg_changed[bb.name] = self_reg_changed[bb.name]
 
     queue = set([bb.name for bb in func.bb if reg_changed[bb.name]])
     if not queue:
+        unset_log_phase()
         return (False, func)
 
     while queue:
@@ -146,6 +148,7 @@ def save_registers(func, fmap):
     all_reg_changed = set()
     for n in self_reg_changed:
         all_reg_changed |= self_reg_changed[n]
+    logging.info(_str_set(all_reg_changed))
 
     nfn = mod.Func(func.name, func.param, func.rety)
     #store everything changed onto stack
@@ -174,6 +177,7 @@ def save_registers(func, fmap):
         nbb += [bb.br]
         nfn += [nbb]
     nfn.machine_finish(fmap)
+    unset_log_phase()
     return (True, nfn)
 
 def return_value(func, fmap):

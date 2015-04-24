@@ -54,6 +54,7 @@ class Registers:
         reg = self.vrmap[var]
         del self.vrmap[var]
         self.avail_reg[reg] = 1
+        self.avail_reg.move_to_end(reg, last=False) #prefer newly dropped reg
         self.usable_reg |= {reg}
         assert reg in self.rvmap, reg
         del self.rvmap[reg]

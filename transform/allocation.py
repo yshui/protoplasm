@@ -101,7 +101,6 @@ def allocate_bb(bb, bbmap):
             R.reserve(i.dst, s)
             ret[i.dst] = deque([])
             continue
-        logging.debug(i)
 
         if isinstance(i, IR.Invoke):
             #store every variable still alive
@@ -137,21 +136,21 @@ def allocate_bb(bb, bbmap):
                 R.drop_both(v)
             else :
                 assert isinstance(i, IR.Invoke), v
+        logging.info("%s: Last use: %s ", i, _str_set(i.last_use))
         if not ds:
             continue
         d, = ds
-        logging.info("%s: Last use: %s ", i, _str_set(i.last_use))
-        if len(i.last_use) == 1:
+        #if len(i.last_use) == 1:
             #reuse the operand register
-            R.reserve(d, dreg)
-            ret[d] = deque([dreg])
-            logging.info("Reuse %s for %s", dreg, d)
-        else :
-            #more than one or none, reuse does not make sense
-            reg, s, sm = R.get_may_spill(d)
-            ret[d] = deque([reg])
-            if s:
-                ret[s].append(sm)
+        #    R.reserve(d, dreg)
+        #    ret[d] = deque([dreg])
+        #    logging.info("Reuse %s for %s", dreg, d)
+        #else :
+        #just get new reg, reuse will be handled by storage model
+        reg, s, sm = R.get_may_spill(d)
+        ret[d] = deque([reg])
+        if s:
+            ret[s].append(sm)
     bb.assign_out_reg(R)
     logging.info("OUT REG:" + _str_dict(bb.out_reg))
     return (ret, prmap)
