@@ -78,7 +78,7 @@ class New(Expr):
         szp1 = st.allocator.next_name()
         szp1m4 = st.allocator.next_name()
         bb += [IRI.Arithm('+', szp1, res, 1), IRI.Arithm('*', szp1m4, szp1, 4)]
-        bb += [IRI.Malloc(ndst, szp1m4, c=str(self))]
+        bb += [IRI.Invoke("malloc", [szp1m4], ndst, c=str(self))]
         #store the size of the array
         bb += [IRI.Store(IRO.Cell(0, base=ndst), res)]
         ndst2 = st.allocator.next_name()
@@ -335,6 +335,13 @@ class ArrIndx(Expr): #array indexing expr
         base = self.lhs.get_result(st, fn, True)
         idx = self.index.get_result(st, fn)
         bb = fn.last_bb
+
+        #check for idx >= 0
+        cmpres = st.allocator.next_name()
+        bb += [IRI.Cmp('>=', cmpres, idx, 0)]
+        nextbb = fn.next_name()
+        bb += [IRI.Br(1, cmpres, fn.mangle()+"_Lbound", nextbb)]
+        bb = fn.append_bb(nextbb)
 
         #load -4(base) for the size of array
         sz = st.allocator.next_name()
