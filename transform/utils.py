@@ -1,8 +1,8 @@
 from IR.instruction import Arithm, Load, Store
 from IR.operand import Register, Cell
 from utils import _str_dict, _str_set
+from IR.machine import arg_regs
 import logging
-arg_regs = set([Register("a%d" % i) for i in range(0, 4)])
 def arg_passing(nbb, args, R):
     #TODO Make this method more generic, use it on phi as well
 

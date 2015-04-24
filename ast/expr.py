@@ -28,6 +28,12 @@ class Call(Expr):
         self.name = name
         self.args = args
         self.linenum = linenum
+    def __str__(self):
+        res = "Call(%s" % self.name
+        for arg in self.args:
+            res += ", %s" % arg
+        res += ")"
+        return res
     def _get_result(self, st, fn, res):
         args = []
         for arg in self.args:
@@ -338,7 +344,7 @@ class ArrIndx(Expr): #array indexing expr
         bb += [IRI.Cmp('<', cmpres, idx, sz)]
 
         nextbb = fn.next_name()
-        bb += [IRI.Br(1, cmpres, "Lbound",nextbb )]
+        bb += [IRI.Br(1, cmpres, fn.mangle()+"_Lbound", nextbb)]
 
         bb = fn.append_bb(nextbb)
         if isinstance(idx, int):

@@ -247,7 +247,7 @@ class Func:
     def next_name(self):
         res = "L"+str(self.namecnt)
         self.namecnt += 1
-        return self.name+"_"+res
+        return self.mangle()+"_"+res
 
     def append_bb(self, name=None):
         if name is None:

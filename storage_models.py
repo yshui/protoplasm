@@ -1,13 +1,13 @@
 from IR.operand import Cell, Var, Register
 from IR.instruction import Load, Store
-from IR.machine import all_reg
+from IR.machine import all_reg, arg_regs
 from collections import OrderedDict
 from utils import _str_dict
 import logging
 class Registers:
     def __init__(self, M=None):
         self.avail_reg = OrderedDict([(x, 1) for x in all_reg])
-        self.usable_reg = set(all_reg)|set([Register("a%d" % n) for n in range(0, 3)])
+        self.usable_reg = set(all_reg)|arg_regs
         assert self.avail_reg, "No available register found!!"
         self.vrmap = {}
         self.rvmap = OrderedDict() #ordered dict to support LRU
@@ -53,8 +53,9 @@ class Registers:
             return
         reg = self.vrmap[var]
         del self.vrmap[var]
-        self.avail_reg[reg] = 1
-        self.avail_reg.move_to_end(reg, last=False) #prefer newly dropped reg
+        if reg not in arg_regs:
+            self.avail_reg[reg] = 1
+            self.avail_reg.move_to_end(reg, last=False) #prefer newly dropped reg
         self.usable_reg |= {reg}
         assert reg in self.rvmap, reg
         del self.rvmap[reg]

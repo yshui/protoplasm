@@ -359,12 +359,13 @@ class Block:
         for w in self.slist:
             w.emit(self.symtable, fn)
         if self.is_top:
-            bb = fn.append_bb("Lbound")
+            bound_name = fn.mangle()+"_Lbound"
+            bb = fn.append_bb(bound_name)
             strg = fn.glob_for_str("Out-of-bound error, abort\\n")
             strv = st.allocator.next_name()
             bb += [IRI.GetAddrOf(strv, strg)]
             bb += [IRI.Invoke("print_str", [strv], None), IRI.Invoke("exit", [], None)]
-            bb += [IRI.Br(0, None, "Lbound", None)]
+            bb += [IRI.Br(0, None, bound_name, None)]
 
     def wellformed(self, st, defined):
         if not self.symtable:
@@ -390,8 +391,6 @@ class Block:
         return mod-set(self.symtable.d)
     def __init__(self, slist, dlist, linenum=0):
         self.slist = slist
-        assert isinstance(dlist, list)
-        assert not dlist or not isinstance(dlist[0], list), dlist
         self.dlist = dlist
         self.symtable = None
         self.parent = None

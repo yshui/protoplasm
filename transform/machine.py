@@ -99,7 +99,7 @@ def local_stack_alloc(func, fmap):
     stack_top += 4
     #shift stack point upon entry
     nfn = mod.Func(func.name, func.param, func.rety)
-    bb = mod.BB(func.name+"_Llocal")
+    bb = mod.BB(func.mangle()+"_Llocal")
     bb += [IRI.Arithm('-', "$sp", "$sp", stack_top)]
     bb += [IRI.Br(0, None, func.bb[0].name, None)]
     nfn += [bb]
@@ -152,7 +152,7 @@ def save_registers(func, fmap):
 
     nfn = mod.Func(func.name, func.param, func.rety)
     #store everything changed onto stack
-    bb = mod.BB(func.name+"_Lsave")
+    bb = mod.BB(func.mangle()+"_Lsave")
     bb += [IRI.Arithm('-', "$sp", "$sp", len(all_reg_changed)*4)]
     offset = 0
     offsetof = {}
