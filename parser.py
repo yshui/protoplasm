@@ -21,8 +21,9 @@ def p_prgm(p):
     p[0] = ast.Program(p[1])
 
 def p_param(p):
-    'param : type var'
-    p[0] = p[2]
+    'param : type ID'
+    p[0] = expr.Var(p[2], p.lineno(2))
+    p[0].ty = p[1]
 
 def p_param_list(p):
     'param_list : param_list COMMA param'
@@ -53,14 +54,17 @@ def p_args_one(p):
 def p_args(p):
     '''args : arg_plus
             | empty'''
-    p[0] = p[1]
+    if p[1] is None:
+        p[0] = []
+    else :
+        p[0] = p[1]
 
 def p_fn(p):
     'fn : type ID LPAREN param_list_star RPAREN stmt'
     body = p[6]
     if not isinstance(body, ast.Block):
         body = ast.Block([p[6]], [], p[6].linenum)
-    p[0] = ast.Fn(p[2], p[4], p[1], body, p.lineno(1))
+    p[0] = ast.Fn(p[2], p[4], p[1], body, p.lineno(2))
     body.is_top = True
 
 def p_empty(p):
@@ -81,10 +85,20 @@ def p_decl(p):
             | var_decl'''
     p[0] = p[1]
 
-def p_type(p):
-    '''type : INT
-            | BOOL'''
+def p_type_nonvoid(p):
+    '''base_type :  INT
+                  | BOOL'''
     p[0] = sym.Type(p[1])
+
+def p_type_arr(p):
+    '''arr_type : arr_type LBRACKET RBRACKET
+                | base_type LBRACKET RBRACKET'''
+    p[0] = sym.ArrayTy(p[1])
+
+def p_type(p):
+    '''type : base_type
+            | arr_type'''
+    p[0] = p[1]
 
 def p_type_void(p):
     'type : VOID'
@@ -101,22 +115,18 @@ def p_var_decl_list_empty(p):
 
 def p_var_decl(p):
     'var_decl : type var_list SEMICOLON'
-    for v in p[2]:
-        v.ty = p[1]
     p[0] = p[2]
+    for v in p[0]:
+        v.ty = p[1]
 
 def p_var_list(p):
-    'var_list : var COMMA var_list'
-    p[3].append(p[1])
+    'var_list : ID COMMA var_list'
+    p[3].append(expr.Var(p[1], p.lineno(1)))
     p[0] = p[3]
 
 def p_var_list_single(p):
-    'var_list : var'
-    p[0] = [p[1]]
-
-def p_var(p):
-    'var : ID dimstar'
-    p[0] = expr.Var(p[1], p.lineno(1))
+    'var_list : ID'
+    p[0] = [expr.Var(p[1], p.lineno(1))]
 
 def p_stmt_list_empty(p):
     'stmt_list : empty'
@@ -142,8 +152,12 @@ def p_lvalue_id(p):
     'lvalue : ID'
     p[0] = expr.Var(p[1], p.lineno(1))
 def p_lvalue_arr(p):
-    'lvalue : lvalue LBRACKET expr RBRACKET'
-    p[0] = expr.ArrIndx(p[1], p[3], linenum=p.lineno(1))
+    'lvalue : arr_access'
+    p[0] = p[1]
+
+def p_arr_access(p):
+    'arr_access : primary LBRACKET expr RBRACKET'
+    p[0] = expr.ArrIndx(p[1], p[3], linenum=p.lineno(2))
 
 def p_return(p):
     'return : RETURN expr SEMICOLON'
@@ -155,7 +169,7 @@ def p_return_void(p):
 
 def p_assign(p):
     'assign : lvalue ASSIGN expr'
-    p[0] = expr.Asgn(p[1], p[3], p.lineno(1))
+    p[0] = expr.Asgn(p[1], p[3], p.lineno(2))
 
 def p_call(p):
     'call : ID LPAREN args RPAREN'
@@ -228,26 +242,31 @@ def p_expr_binop(p):
     '''
     p[0] = expr.BinOP(p[1], p[2], p[3], p.lineno(1))
 
-def p_expr_number(p):
-    'expr : NUMBER'
+def p_prnumber(p):
+    'primary : NUMBER'
     p[0] = expr.Num(p[1], p.lineno(1))
 
-def p_expr_bool(p):
-    '''expr : FALSE
-            | TRUE'''
+def p_prbool(p):
+    '''primary : FALSE
+               | TRUE'''
     if p[1] == 'true':
         p[0] = expr.Num(1, p.lineno(1))
     else :
         p[0] = expr.Num(0, p.lineno(1))
+    p[0].ty = sym.Type('bool')
 
-def p_expr_paren(p):
-    'expr : LPAREN expr RPAREN'
+def p_prparen(p):
+    'primary : LPAREN expr RPAREN'
     p[0] = p[2]
+
+def p_primary(p):
+    '''primary : lvalue
+               | call'''
+    p[0] = p[1]
 
 def p_expr_val(p):
     '''expr : assign
-            | lvalue
-            | call'''
+            | primary'''
     p[0] = p[1]
 
 def p_expr_uop(p):
@@ -256,12 +275,12 @@ def p_expr_uop(p):
     '''
     p[0] = expr.UOP(p[1], p[2], p.lineno(1))
 def p_expr_input(p):
-    'expr : INPUT LPAREN RPAREN'
+    'primary : INPUT LPAREN RPAREN'
     p[0] = expr.Inpt(p.lineno(1))
 
 def p_dim(p):
     'dim : LBRACKET expr RBRACKET'
-    p[0] = ast.Dim(p[2], 0)
+    p[0] = p[2]
 
 def p_dimstar(p):
     'dimstar : dimstar LBRACKET RBRACKET'
@@ -272,9 +291,8 @@ def p_dimstar_empty(p):
     p[0] = 0
 
 def p_expr_new(p):
-    'expr : NEW type dim dimstar'
-    p[3].star = p[4]
-    p[0] = expr.New(p[2], p[3])
+    'expr : NEW base_type dim dimstar'
+    p[0] = expr.New(p[2], p[3], p[4], p.lineno(1))
 
 def p_error(p):
     raise Exception("Syntax error, unexpected '{0}' at line {1}".format(p.value, p.lineno))

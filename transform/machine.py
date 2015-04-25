@@ -190,10 +190,13 @@ def return_value(func, fmap):
             nfn += [nxbb]
             continue
         assert not bb.br.retval.is_nil
-        assert bb.br.retval.is_reg, bb.br.retval
         nbb = mod.BB(bb.name)
         nbb += bb.ins
-        nbb += [IRI.Arithm('+', "$v0", bb.br.retval, 0)]
+        if bb.br.retval.is_reg:
+            nbb += [IRI.Arithm('+', "$v0", bb.br.retval, 0)]
+        else :
+            assert bb.br.retval.is_imm
+            nbb += [IRI.Load("$v0", bb.br.retval.val)]
         nbb += [bb.br]
         nfn += [nbb]
     nfn.machine_finish(fmap)

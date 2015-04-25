@@ -285,6 +285,7 @@ def load_or_move(src, dst):
     elif src.is_reg:
         return "\tadd %s, %s, 0\n" % (str(dst), str(src))
     else :
+        assert src.is_mem
         return "\tlw %s, %s\n" % (str(dst), src)
 
 def move_or_store(src, dst):
@@ -417,7 +418,7 @@ class Invoke(NIns):
             self.comment = "\t#"+c
     def validate(self, dfn, fmap):
         assert self.name in fmap
-        assert fmap[self.name].rety == self.dst.get_type()
+        assert fmap[self.name].rety == self.dst.get_type() or self.dst.is_nil
         self.dst.validate(dfn)
         for arg in self.args:
             arg.validate(dfn)

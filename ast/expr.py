@@ -1,7 +1,9 @@
 import IR.instruction as IRI
 import IR.operand as IRO
 import logging
+from . import symbol as sym
 class Expr:
+    cont = True
     @property
     def is_constant(self):
         return False
@@ -52,26 +54,38 @@ class Call(Expr):
     def emit(self, st, fn):
         #as a statement
         self._get_result(st, fn, None)
-    def wellformed(self, st, defined):
-        for arg in self.args:
+    def wellformed(self, st, defined, _=None):
+        if self.name not in st.globs:
+            logging.error("Function '%s' not declared\n", self.name)
+            return False
+        func = st.globs[self.name]
+        if not func.ty == sym.FnTy():
+            logging.error("Trying to call non-function '%s', line %d", self.name,
+                          self.linenum)
+            return False
+        for i, arg in enumerate(self.args):
             if not arg.wellformed(st, defined):
                 return False
-        if self.name not in st.globs:
-            logging.error("Function %s not declared\n", self.name)
-            return False
+            if not arg.ty == func.params[i].ty:
+                logging.error("Argument %d to function '%s' has type '%s', expected '%s', line %d",
+                              i, self.name, arg.ty, func.params[i].ty, self.linenum)
+                return False
+        self.ty = func.rety
         return True
 
 class New(Expr):
-    def __init__(self, t, dim):
+    def __init__(self, t, dim, depth, linenum=0):
         self.t = t
         self.dim = dim
+        self.depth = depth
+        self.linenum = linenum
     def __str__(self):
-        return "New(%s, %s)" % (self.t, self.dim)
+        return "New(%s, [%s], []*%d)" % (self.t, self.dim, self.depth)
     @property
     def is_constant(self):
         return False
     def get_result_noconst(self, st, ir):
-        res = self.dim.size.get_result(st, ir, True)
+        res = self.dim.get_result(st, ir, True)
         ndst = st.allocator.next_name()
         bb = ir.last_bb
         #calc (size+1) and (size+1)*4
@@ -85,16 +99,26 @@ class New(Expr):
         bb += [IRI.Arithm('+', ndst2, ndst, 4)]
         return ndst2
     def wellformed(self, st, defined):
-        return self.dim.size.wellformed(st, defined)
+        if not self.dim.wellformed(st, defined):
+            return False
+        if not self.dim.ty == sym.Type('int'):
+            logging.error("Array size can't be type %s, line %d", self.dim.ty, self.linenum)
+            return False
+        ty = sym.ArrayTy(self.t)
+        for i in range(0, self.depth):
+            ty = sym.ArrayTy(ty)
+        self.ty = ty
+        return True
     def get_modified(self, either):
-        return self.dim.size.get_modified(either)
+        return self.dim.get_modified(either)
 
 class Inc(Expr):
-    def __init__(self, lval, pos, op):
+    def __init__(self, lval, pos, op, linenum=None):
         self.pos = pos
         self.op = op
         self.lval = lval
         self.res = None
+        self.linenum = linenum
     def __str__(self):
         insn = ['Inc', 'Dec']
         pos = ['Pre', 'Post']
@@ -116,10 +140,20 @@ class Inc(Expr):
     def get_result_noconst(self, st, ir):
         self.emit(st, ir)
         return self.res
-    def wellformed(self, st, dfn):
-        return self.lval.wellformed(st, dfn)
+    def wellformed(self, st, dfn, _=None):
+        if not self.lval.wellformed(st, dfn):
+            return False
+        opn = ['++', '--']
+        if self.lval.ty != sym.Type('int'):
+            logging.error("'%s' is not defined for type %s, line %d", opn[self.op],
+                          self.lval.ty, self.linenum)
+            return False
+        return True
     def get_modified(self, _=False):
-        return self.lval.get_modified(is_dst=True)
+        dfn = self.lval.get_modified()
+        if isinstance(self.lval, Var):
+            dfn |= {self.lval.name}
+        return dfn
 
 class Asgn(Expr):
     def __str__(self):
@@ -144,10 +178,24 @@ class Asgn(Expr):
             v = self.rhs.get_result(st, ir, True)
             self.res = v
             self.lhs.assign(st, ir, v)
-    def wellformed(self, st, defined):
-        return self.lhs.wellformed(st, defined, True) and self.rhs.wellformed(st, defined)
+    def wellformed(self, st, defined, _=None):
+        if not self.lhs.wellformed(st, defined, True):
+            return False
+        if not self.rhs.wellformed(st, defined):
+            return False
+        if self.lhs.ty != self.rhs.ty:
+            logging.error("Can't assign from type '%s' to '%s', line %d", self.rhs.ty,
+                          self.lhs.ty, self.linenum)
+            return False
+        self.ty = self.lhs.ty
+        return True
     def get_modified(self, either=False):
-        return self.lhs.get_modified(either, True)|self.rhs.get_modified(either)
+        ld = self.lhs.get_modified(either)
+        rd = self.rhs.get_modified(either)
+        dfn = ld|rd
+        if isinstance(self.lhs, Var):
+            dfn |= {self.lhs.name}
+        return dfn
 
 class UOP(Expr):
     def get_result_noconst(self, st, ir):
@@ -180,11 +228,45 @@ class UOP(Expr):
         self.opr = opr
         self.linenum = linenum
     def wellformed(self, st, defined):
-        return self.opr.wellformed(st, defined)
+        if not self.opr.wellformed(st, defined):
+            return False
+
+        expty = None
+        if self.op == '!':
+            expty = sym.Type('bool')
+        else :
+            expty = sym.Type('int')
+
+        if not self.opr.ty == expty:
+            logging.error("Operator '%s' is not defined for type %s, line %d",
+                          self.op, self.opr.ty, self.linenum)
+            return False
+        self.ty = self.opr.ty
+        return True
     def get_modified(self, either=False):
         return self.opr.get_modified(either)
 
+intint_int = ([sym.Type('int'), sym.Type('int')], sym.Type('int'))
+boolbool_bool = ([sym.Type('bool'), sym.Type('bool')], sym.Type('bool'))
+intint_bool = ([sym.Type('int'), sym.Type('int')], sym.Type('bool'))
 class BinOP(Expr):
+    type_tab = {
+        "+":[intint_int],
+        "-":[intint_int],
+        "*":[intint_int],
+        "//":[intint_int],
+        "%":[intint_int],
+        "&":[intint_int, boolbool_bool],
+        "|":[intint_int, boolbool_bool],
+        "&&":[boolbool_bool],
+        "||":[boolbool_bool],
+        "==":[intint_bool, boolbool_bool],
+        "!=":[intint_bool, boolbool_bool],
+        "<":[intint_bool],
+        ">":[intint_bool],
+        "<=":[intint_bool],
+        ">=":[intint_bool],
+    }
     def get_result_noconst(self, st, ir):
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
         dst = st.allocator.next_name()
@@ -277,12 +359,19 @@ class BinOP(Expr):
             self.op = op
         else :
             self.op = "//"
+        self.ty = None
     def wellformed(self, st, defined):
-        ret = self.lopr.wellformed(st, defined)
-        if not ret:
+        if not self.lopr.wellformed(st, defined):
             return False
         defined = defined|self.lopr.get_modified()
-        return self.ropr.wellformed(st, defined)
+        if not self.ropr.wellformed(st, defined):
+            return False
+        self.ty = sym.pattern_match(self.type_tab[self.op], [self.lopr.ty, self.ropr.ty])
+        if self.ty is None:
+            logging.error("Operator '%s' is not defined for type (%s, %s), line %d", self.op,
+                          self.lopr.ty, self.ropr.ty, self.linenum)
+            return False
+        return True
     def get_modified(self, either=False):
         ldfn = self.lopr.get_modified(either)
         rdfn = self.ropr.get_modified(either)
@@ -291,7 +380,20 @@ class BinOP(Expr):
         return ldfn
 
 class Var(Expr):
-    def get_result_noconst(self, st, ir):
+    def get_global_addr(self, st, fn):
+        assert self.is_global
+        bb = fn.last_bb
+        addr = st.allocator.next_name()
+        bb += [IRI.GetAddrOf(addr, IRO.Global(self.name))]
+        return addr
+
+    def get_result_noconst(self, st, fn):
+        if self.is_global:
+            res = st.allocator.next_name()
+            addr = self.get_global_addr(st, fn)
+            bb = fn.last_bb
+            bb += [IRI.Load(res, IRO.Cell(0, addr))]
+            return res
         return st.curr_ver(self.name)
     @property
     def is_constant(self):
@@ -299,6 +401,8 @@ class Var(Expr):
     def __init__(self, name, linenum=0):
         self.name = name
         self.linenum = linenum
+        self.ty = None
+        self.is_global = None
     def __str__(self):
         return "Var({0})".format(self.name)
     def __eq__(self, other):
@@ -310,25 +414,36 @@ class Var(Expr):
         return self.name.__hash__()
     def wellformed(self, st, defined, is_dst=False):
         if self.name not in st:
-            logging.error("Undeclared variable '%s' used at line %d" % (self.name, self.linenum))
-            return False
-        if self.name not in defined and not is_dst:
-            logging.error("Variable '{0}' used before initialization, at line {1}".format(self.name, self.linenum))
-            return False
-        return True
-    def assign(self, st, _, var):
-        st.assign(self.name, var)
-    def get_modified(self, either=False, is_dst=False):
-        if is_dst:
-            return {self.name}
+            if self.name not in st.globs:
+                logging.error("Undeclared variable '%s' used at line %d" % (self.name, self.linenum))
+                return False
+            else :
+                self.ty = st.globs[self.name].ty
+                self.is_global = True
+                return True
+        else :
+            if self.name not in defined and not is_dst:
+                logging.error("Variable '{0}' used before initialization, at line {1}".format(self.name, self.linenum))
+                return False
+            if self.ty is None:
+                self.ty = st.get_ty(self.name)
+            return True
+    def assign(self, st, fn, var):
+        if self.is_global:
+            addr = self.get_global_addr(st, fn)
+            bb = fn.last_bb
+            bb += [IRI.Store(IRO.Cell(0, addr), var)]
+        else :
+            st.assign(self.name, var)
+    def get_modified(self, either=False):
         return set()
 
 class ArrIndx(Expr): #array indexing expr
     def __init__(self, lhs, indx, linenum=0):
         self.lhs = lhs
-        assert isinstance(lhs, ArrIndx) or isinstance(lhs, Var) #XXX remove later
         self.index = indx
         self.linenum = linenum
+        self.ty = None
     def __str__(self):
         return "%s[%s]" % (self.lhs, self.index)
     def get_offset(self, st, fn):
@@ -336,9 +451,12 @@ class ArrIndx(Expr): #array indexing expr
         idx = self.index.get_result(st, fn)
         bb = fn.last_bb
 
-        #check for idx >= 0
         cmpres = st.allocator.next_name()
-        bb += [IRI.Cmp('>=', cmpres, idx, 0)]
+        if not isinstance(idx, int):
+            #check for idx >= 0
+            bb += [IRI.Cmp('>=', cmpres, idx, 0)]
+        else :
+            cmpres = int(idx >= 0)
         nextbb = fn.next_name()
         bb += [IRI.Br(1, cmpres, fn.mangle()+"_Lbound", nextbb)]
         bb = fn.append_bb(nextbb)
@@ -373,9 +491,22 @@ class ArrIndx(Expr): #array indexing expr
     def is_constant(self):
         return False
     def wellformed(self, st, dfn, _=False):
-        return self.lhs.wellformed(st, dfn, False) and self.index.wellformed(st, dfn)
-    def get_modified(self, either=False, is_dst=False):
-        return self.lhs.get_modified(either, False)|self.index.get_modified(either)
+        if not self.lhs.wellformed(st, dfn, False):
+            return False
+        if not isinstance(self.lhs.ty, sym.ArrayTy):
+            logging.error("%s is not an array, line %d", self.lhs, self.linenum)
+            return False
+        if not self.index.wellformed(st, dfn):
+            return False
+        if not self.index.ty == sym.Type('int'):
+            logging.error("Array subscription is not 'int' (got '%s'), at line %d", self.index.ty, self.index.linenum)
+            return False
+        self.ty = self.lhs.ty.inner
+        return True
+    def get_modified(self, either=False):
+        ld = self.lhs.get_modified(either)
+        ind = self.index.get_modified(either)
+        return ld|ind
     def assign(self, st, fn, v):
         offset = self.get_offset(st, fn)
         bb = fn.last_bb
@@ -397,6 +528,7 @@ class Num(Expr):
             self.number = num
         else :
             raise Exception("num is not a number???")
+        self.ty = sym.Type('int')
     def wellformed(self, *_):
         return True
 
@@ -408,6 +540,7 @@ class Inpt(Expr):
         return "Input()"
     def __init__(self, linenum=0):
         self.linenum = linenum
+        self.ty = sym.Type('int')
         return
     def get_result_noconst(self, st, fn):
         dst = st.allocator.next_name()
@@ -416,5 +549,3 @@ class Inpt(Expr):
         return dst
     def wellformed(self, *_):
         return True
-    def get_modified(self, _=False):
-        return set()

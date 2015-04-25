@@ -279,9 +279,9 @@ def allocate(func, fmap):
                         continue
                     assert v in allocation[bb], v
                     e, m = allocation[bb][v].popleft()
-                    R.M.reserve(v, m)
                     if not e:
-                        nbb += [IR.Store(m, R.get(v))]
+                        R.M.reserve(v, m)
+                        nbb += [IR.Store(m, R.get(v), c="Saving %s before invoke" % v)]
                     #drop all variables
                 logging.info("!@#$"+_str_dict(R.vrmap))
                 arg_passing(nbb, i.args, R)

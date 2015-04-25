@@ -107,7 +107,10 @@ def prune_unreachable(func, fmap):
 
     if not removed:
         if not func.finished:
-            func.finish()
+            #remove pre calculated preds and succs
+            for bb in func.bb:
+                bb.preds = []
+            func.finish(fmap)
         unset_log_phase()
         return (False, func)
 

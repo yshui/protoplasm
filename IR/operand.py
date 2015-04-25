@@ -214,4 +214,4 @@ def get_operand(val, dst=False):
         return Register(val[1:])
     if val[0] == '@':
         return Global(val[1:])
-    assert False
+    assert False, val

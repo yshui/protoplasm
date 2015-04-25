@@ -44,7 +44,6 @@ class SymTable:
                     assert False, dlist
 
     def __contains__(self, other):
-        print(self.d)
         if other in self.d:
             return True
         if not self.prototype:
@@ -116,6 +115,13 @@ class SymTable:
             return self.prototype.assign(name, var)
         self.d[name] = str(var)
 
+    def get_ty(self, name):
+        if name not in self:
+            return None
+        if name in self.t:
+            return self.t[name].ty
+        return self.prototype.get_ty(name)
+
     def unassign(self, name):
         if name in self.modified:
             assert self.modified[name] is None
@@ -129,6 +135,7 @@ class SymTable:
         if name not in self.d:
             assert self.prototype, name
             return self.prototype.curr_ver(name)
+        assert self.d[name] is not None
         return str(self.d[name])
 
     def __str__(self):
@@ -139,26 +146,50 @@ class Type:
         self.name = name
     def __str__(self):
         return self.name
+    def __eq__(self, o):
+        if type(o) is not type(self):
+            return False
+        return self.real_eq(o)
+    def real_eq(self, o):
+        return self.name == o.name
     @property
     def itype(self):
         return opr.Type('i32')
 
 class ArrayTy(Type):
+    def real_eq(self, o):
+        return self.inner == o.inner
     def __init__(self, inner):
         self.inner = inner
         Type.__init__(self, "Array")
+    def __str__(self):
+        return "Array(%s)" % self.inner
 
 class FnTy(Type):
     def __init__(self):
         Type.__init__(self, "Fn")
+    def real_eq(self, o):
+        return True
     @property
     def itype(self):
         assert False
 
 class VoidTy(Type):
+    def real_eq(self, o):
+        return True
     def __init__(self):
         Type.__init__(self, "Void")
     @property
     def itype(self):
         return opr.Type('void')
 
+def pattern_match(table, intype):
+    for entry in table:
+        if len(intype) != len(entry[0]):
+            continue
+        for i, ty in enumerate(entry[0]):
+            if not (ty == intype[i]):
+                break
+        else :
+            return entry[1]
+    return None
