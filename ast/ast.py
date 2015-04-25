@@ -135,7 +135,7 @@ class If:
             use = None
             if self.then.cont:
                 use = mod_then
-            elif self.else_.cont:
+            elif not self.else_ or self.else_.cont:
                 use = mod_else
             else :
                 #both branch return, don't need to continue
@@ -371,7 +371,7 @@ class Fn:
             defined |= {p.name}
         ret = self.body.wellformed(self.symtable, defined, self.rety)
         if self.body.cont:
-            logging.error("Control flow reached the end of function %s\n", self.name)
+            logging.error("Control flow reached the end of function '%s'\n", self.name)
             return False
         return ret
     def emit(self, ir):

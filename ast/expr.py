@@ -63,11 +63,15 @@ class Call(Expr):
             logging.error("Trying to call non-function '%s', line %d", self.name,
                           self.linenum)
             return False
+        if len(self.args) != len(func.params):
+            logging.error("Function '%s' take %d arguments, but got %d, line %d",
+                          self.name, len(func.params), len(self.args), self.linenum)
+            return False
         for i, arg in enumerate(self.args):
             if not arg.wellformed(st, defined):
                 return False
             if not arg.ty == func.params[i].ty:
-                logging.error("Argument %d to function '%s' has type '%s', expected '%s', line %d",
+                logging.error("Argument %d to function '%s' has type '%s', '%s' expected, line %d",
                               i, self.name, arg.ty, func.params[i].ty, self.linenum)
                 return False
         self.ty = func.rety
