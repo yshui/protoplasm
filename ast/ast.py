@@ -208,6 +208,7 @@ class Loop:
         mod |= self.cond.get_modified(True)
         if self.post:
             mod |= self.post.get_modified(True)
+        mod -= set(st.globs)
 
         before = fn.last_bb
         prname = fn.next_name()

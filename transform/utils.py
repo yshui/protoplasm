@@ -59,7 +59,6 @@ def arg_passing(nbb, args, R):
             nbb += [Load(treg, R.M.vmmap[arg])]
 
     v0_inuse = False
-    print(_str_dict(tgt))
     while tgt:
         progress = False
         done = set()

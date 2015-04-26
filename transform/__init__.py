@@ -6,8 +6,8 @@ logger = logging.getLogger()
 
 def set_log_phase(n):
     global myhdlr
-#    if isinstance(myhdlr, logging.NullHandler):
-#        return
+    if isinstance(myhdlr, logging.NullHandler):
+        return
     myhdlr.close()
     myhdlr = logging.FileHandler(filename=n+".log", mode="w")
     logger.addHandler(myhdlr)
@@ -19,7 +19,7 @@ def unset_log_phase():
     logger.removeHandler(myhdlr)
 
 def apply_all(ir, trans):
-    print(ir)
+    logging.debug(ir)
     changed = False
     nir = mod.IR()
     for f in ir.func:

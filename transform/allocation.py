@@ -1,10 +1,11 @@
 from . import set_log_phase, unset_log_phase
 import IR.instruction as IR
+import IR.operand as IRO
 import IR.mod as mod
 import IR.machine as machine
 from storage_models import Registers, Memory
 from .machine import callee_saved
-from .utils import arg_passing, arg_regs
+from .utils import arg_passing
 from collections import deque
 import logging
 from utils import _str_dict, _str_set, _dict_print, _set_print
@@ -329,7 +330,6 @@ def allocate(func, fmap):
             #fallthrough should be put right after
             nfn += [nbb]
         logging.info(bb.name)
-    print(nfn)
     nfn.machine_finish(fmap)
     logging.info(nfn)
     unset_log_phase()
@@ -473,7 +473,7 @@ def gen_phi_block(bb, sbb, prmap):
             del dsmap[creg]
             if not avail_reg:
                 #no free reg, store to memory
-                mcell = IR.Cell(a_mem.pop()*4)
+                mcell = IRO.Cell(a_mem.pop()*4)
                 src_mem[src] = mcell
                 src_reg[src] = None
                 s1ins.append(IR.Store(mcell, creg, c=str(src)))
@@ -517,8 +517,8 @@ def gen_phi_block(bb, sbb, prmap):
             for dst in src_rcv[src]:
                 dmem = prmap[dst]
                 if dmem in dsmap:
-                    print("%s dst %s %s conflict with %s" % (src, dst, dmem, dsmap[dmem]))
-                    print(_str_set(todo))
+                    logging.debug("%s dst %s %s conflict with %s" % (src, dst, dmem, dsmap[dmem]))
+                    logging.debug(_str_set(todo))
 
                     flag = False
                     break
@@ -558,7 +558,7 @@ def gen_phi_block(bb, sbb, prmap):
         else :
             #this to_promote is in dsmap
             #so store it to a new place to resolve conflict
-            mcell = IR.Cell(a_mem.pop()*4)
+            mcell = IRO.Cell(a_mem.pop()*4)
             src_mem[to_promote] = mcell
             logging.info("%s still have left overs, storing to %s", to_promote, mcell)
             s2ins.append(IR.Store(mcell, tmpreg, c=str(to_promote)))

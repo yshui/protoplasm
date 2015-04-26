@@ -180,17 +180,17 @@ def p_assign_incdec_post(p):
               | lvalue DEC
     '''
     if p[2] == '++':
-        p[0] = expr.Inc(p[1], 1, 0)
+        p[0] = expr.Inc(p[1], 1, 0, p.lineno(2))
     else :
-        p[0] = expr.Inc(p[1], 1, 1)
+        p[0] = expr.Inc(p[1], 1, 1, p.lineno(2))
 def p_assign_incdec_pre(p):
     '''assign : INC lvalue
               | DEC lvalue
     '''
     if p[1] == '++':
-        p[0] = expr.Inc(p[2], 0, 0)
+        p[0] = expr.Inc(p[2], 0, 0, p.lineno(2))
     else :
-        p[0] = expr.Inc(p[2], 0, 1)
+        p[0] = expr.Inc(p[2], 0, 1, p.lineno(2))
 def p_print(p):
     'print : PRINT LPAREN expr RPAREN SEMICOLON'
     p[0] = ast.Prnt(p[3], p.lineno(1))

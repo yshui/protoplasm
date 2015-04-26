@@ -148,10 +148,11 @@ class Inc(Expr):
         if not self.lval.wellformed(st, dfn):
             return False
         opn = ['++', '--']
-        if self.lval.ty != sym.Type('int'):
+        if not self.lval.ty == sym.Type('int'):
             logging.error("'%s' is not defined for type %s, line %d", opn[self.op],
                           self.lval.ty, self.linenum)
             return False
+        self.ty = self.lval.ty
         return True
     def get_modified(self, _=False):
         dfn = self.lval.get_modified()
@@ -312,6 +313,7 @@ class BinOP(Expr):
             bb = ir.last_bb
             bb += [IRI.Br(0, None, epname, None)]
             m = st.cp_revert()
+            roprbb = ir.last_bb
 
             bb = ir.append_bb(epname)
             for v in m:

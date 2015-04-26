@@ -314,7 +314,6 @@ class Func:
         logging.debug(self)
         self.calc_connections()
         self.calc_avail()
-        print(self)
         self.validate(fmap)
         self.calc_inout()
         for bb in self.bb:
@@ -410,4 +409,4 @@ class IR:
         for func in self.func:
             f.write(func.gencode(self))
 
-        logging.log(30, "Output written to %s", fname)
+        logging.log(21, "Output written to %s", fname)
