@@ -16,21 +16,24 @@ def _dict_print(d):
 def _set_print(a):
     logging.debug(_str_set(a))
 
-def get_father(x, p):
-    if p[x] == x:
-        return x
-    p[x] = get_father(p[x], p)
-    return p[x]
-def union(x, y, p, h):
-    px = get_father(x, p)
-    py = get_father(y, p)
-    if h[px] > h[py]:
-        p[py] = px
-    else:
-        p[px] = py
-        if h[px] == h[py]:
-            h[py] += 1
-
-def link(x, y, p):
-    py = get_father(y, p)
-    p[py] = get_father(x, p)
+class DisjointSet:
+    def __init__(self, i):
+        self.parent = self
+        self.i = i
+        self.h = 1
+    def union(self, other): #merge other into self
+        po = other.get_father()
+        ps = self.get_father()
+        if po.h > ps.h:
+            ps.parent = po
+            po.i = ps.i
+            ps.i = None
+        else :
+            po.parent = ps
+            po.i = None
+            if po.h == ps.h:
+                ps.h += 1
+    def get_father(self):
+        if self.parent != self:
+            self.parent = self.parent.get_father()
+        return self.parent

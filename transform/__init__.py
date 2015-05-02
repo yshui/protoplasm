@@ -6,8 +6,8 @@ logger = logging.getLogger()
 
 def set_log_phase(n):
     global myhdlr
-    if isinstance(myhdlr, logging.NullHandler):
-        return
+    #if isinstance(myhdlr, logging.NullHandler):
+    #    return
     myhdlr.close()
     myhdlr = logging.FileHandler(filename=n+".log", mode="w")
     logger.addHandler(myhdlr)

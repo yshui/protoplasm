@@ -29,7 +29,12 @@ class NIns(BaseIns):
     def __init__(self):
         self.dst = None
     def get_dfn(self):
+        assert not self.dst.is_var or self.dst.dst, self
         return self.dst.get_dfn()
+    def validate(self, *_):
+        pass
+    def machine_validate(self, _):
+        pass
 
 class GetAddrOf(NIns):
     def __init__(self, dst, src, c=None):
@@ -43,13 +48,11 @@ class GetAddrOf(NIns):
         return set()
     def gencode(self, _):
         return "\tla %s, %s\n" % (self.dst, self.src.get_name())
-    def allocate(self, varmap):
-        self.dst = self.dst.allocate(varmap)
-    def validate(self, dfn, _):
-        self.dst.validate(dfn)
+    def allocate(self, varmap, dst=True):
+        if dst:
+            self.dst = self.dst.allocate(varmap)
     def machine_validate(self, _):
         assert self.dst.is_reg
-        return True
     def __str__(self):
         return "%s = getaddrof %s%s" % (self.dst, self.src, self.comment)
 
@@ -68,9 +71,6 @@ class Rename(NIns):
         assert False
     def allocate(self):
         assert False
-    def validate(self, dfn, _):
-        self.dst.validate(dfn)
-        self.src.validate(dfn)
     def machine_validate(self, _):
         assert False, "rename is not allowed in machine IR"
     def __str__(self):
@@ -120,14 +120,11 @@ class Arithm(NIns):
                 #otherwise fail
                 assert False
 
-    def allocate(self, regmap):
-        self.dst = self.dst.allocate(regmap)
+    def allocate(self, regmap, dst=True):
+        if dst:
+            self.dst = self.dst.allocate(regmap)
         self.opr1 = self.opr1.allocate(regmap)
         self.opr2 = self.opr2.allocate(regmap)
-    def validate(self, dfn, _):
-        self.opr1.validate(dfn)
-        self.opr2.validate(dfn)
-        self.dst.validate(dfn)
     def machine_validate(self, _):
         self.opr1.machine_validate()
         self.opr2.machine_validate()
@@ -173,17 +170,14 @@ class Cmp(NIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-    def allocate(self, regmap):
+    def allocate(self, regmap, dst=True):
         rrr = _str_dict(regmap)
-        self.dst = self.dst.allocate(regmap)
+        if dst:
+            self.dst = self.dst.allocate(regmap)
         self.src1 = self.src1.allocate(regmap)
         self.src2 = self.src2.allocate(regmap)
     def get_used(self):
         return self.src1.get_used()|self.src2.get_used()
-    def validate(self, dfn, _):
-        self.src1.validate(dfn)
-        self.src2.validate(dfn)
-        self.dst.validate(dfn)
     def machine_validate(self, _):
         self.src1.machine_validate()
         self.src2.machine_validate()
@@ -209,11 +203,17 @@ class Br(BaseIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-    def validate(self, dfn, _):
-        self.src.validate(dfn)
-    def machine_validate(self, _):
+    def tgt_validate(self, allname):
+        for i in range(0, len(self.tgt)):
+            if self.tgt[i] is None:
+                continue
+            assert self.tgt[i] in allname, self.tgt[i]
+    def validate(self, allname, _):
+        self.tgt_validate(allname)
+    def machine_validate(self, allname):
+        self.tgt_validate(allname)
         assert self.src.is_reg or self.src.is_nil
-    def allocate(self, regmap):
+    def allocate(self, regmap, _=True):
         logging.debug(_str_dict(regmap))
         self.src = self.src.allocate(regmap)
     def get_dfn(self):
@@ -261,16 +261,11 @@ class Phi:
         del self.srcs[bb]
     def get_dfn(self):
         return self.dst.get_dfn()
-    def allocate(self, regmap):
-        self.dst = self.dst.allocate(regmap)
-    def validate(self, preds, bbmap):
-        for src, var in self.srcs.items():
-            #is var defined in src?
-            _dfn = bbmap[src].internal_dfn|bbmap[src].avail_dfn
-            var.validate(_dfn)
-            logging.debug("%s is defined in %s", var, src)
+    def allocate(self):
+        assert False
+    def validate(self, preds):
         for pred in preds:
-            assert pred in self.srcs
+            assert pred.name in self.srcs, "Predessor %s not handled in phi %s" % (pred.name, self)
         assert len(preds) == len(self.srcs), "%s %s" % (preds, self)
     def __str__(self):
         res = "%s = phi " % self.dst
@@ -308,17 +303,17 @@ class Load(NIns):
             self.comment = "\t#"+c
     def __str__(self):
         return "%s = load %s%s" % (self.dst, self.m, self.comment)
-    def allocate(self, regmap):
-        self.dst = self.dst.allocate(regmap)
+    def allocate(self, regmap, dst=True):
+        if dst:
+            self.dst = self.dst.allocate(regmap)
         self.m = self.m.allocate(regmap)
     def get_used(self):
         return self.m.get_used()|self.dst.get_used()
     def gencode(self, _):
         return load_or_move(self.m, self.dst)
-    def validate(self, dfn, _):
-        self.dst.validate(dfn)
     def machine_validate(self, _):
         self.dst.machine_validate()
+        self.m.machine_validate()
 
 class Store(NIns):
     def __init__(self, dst, r, c=None):
@@ -329,53 +324,18 @@ class Store(NIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-    def allocate(self, regmap):
+    def allocate(self, regmap, _=True):
         self.r = self.r.allocate(regmap)
         self.dst = self.dst.allocate(regmap)
     def gencode(self, _):
         return move_or_store(self.r, self.dst)
-    def validate(self, dfn, _):
-        self.r.validate(dfn)
     def machine_validate(self, _):
+        self.dst.machine_validate()
         self.r.machine_validate()
     def get_used(self):
         return self.r.get_used()|self.dst.get_used()
     def __str__(self):
         return "store %s, %s%s" % (self.dst, self.r, self.comment)
-
-class Malloc(NIns):
-    def __init__(self, dst, size, c=None):
-        self.dst = get_operand(dst, True)
-        assert self.dst.is_var or self.dst.is_reg
-        self.size = get_operand(size)
-        assert not self.size.is_mem
-        self.comment = ""
-        if c is not None :
-            self.comment = "\t#"+c
-    def allocate(self, regmap):
-        self.dst = self.dst.allocate(regmap)
-        self.size = self.size.allocate(regmap)
-    def validate(self, dfn, _):
-        self.dst.validate(dfn)
-        self.size.validate(dfn)
-    def machine_validate(self, _):
-        self.dst.machine_validate()
-        self.size.machine_validate()
-    def get_used(self):
-        return self.size.get_used()
-    def __str__(self):
-        return "%s = malloc %s%s" % (self.dst, self.size, self.comment)
-    def gencode(self, _):
-        res = "\tli $v0, 9\n"
-        if self.size.is_imm:
-            res += "\tli $a0, %d\n" % (self.size.val)
-        else :
-            assert self.size.is_reg
-            res += "\tadd $a0, %s, 0\n" % (self.size)
-        res += "\tsyscall\n"
-        assert self.dst.is_reg
-        res += "\tadd %s, $v0, 0\n" % (self.dst)
-        return res
 
 class Ret:
     def __init__(self, retval=None):
@@ -383,21 +343,20 @@ class Ret:
         self.is_br = True
         self.is_phi = False
         self.tgt = [None, None]
+        self.tgtbb = [None, None]
         self.src = Nil()
         self.retval = get_operand(retval)
-    def allocate(self, varmap):
+    def allocate(self, varmap, _=True):
         self.retval = self.retval.allocate(varmap)
     def gencode(self, _):
         return "\tjr $ra\n"
-    def validate(self, _dfn, func):
-        if func.rety == Type("void") :
+    def validate(self, _, rety):
+        if rety == Type("void") :
             assert self.retval.is_nil
         else :
             assert not self.retval.is_nil
-        self.retval.validate(_dfn)
-        return True
     def machine_validate(self, bbmap):
-        return True
+        self.retval.machine_validate()
     def get_used(self):
         return self.retval.get_used()
     def get_dfn(self):
@@ -416,12 +375,9 @@ class Invoke(NIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-    def validate(self, dfn, fmap):
+    def validate(self, fmap):
         assert self.name in fmap
         assert fmap[self.name].rety == self.dst.get_type() or self.dst.is_nil
-        self.dst.validate(dfn)
-        for arg in self.args:
-            arg.validate(dfn)
         assert len(self.args) == len(fmap[self.name].param), fmap[self.name].param
     def get_used(self):
         res = set()
@@ -438,8 +394,9 @@ class Invoke(NIns):
             res = res[:-2]
         res += "]"+self.comment
         return res
-    def allocate(self, varmap):
-        self.dst = self.dst.allocate(varmap)
+    def allocate(self, varmap, dst=True):
+        if dst:
+            self.dst = self.dst.allocate(varmap)
         self.args = [arg.allocate(varmap) for arg in self.args]
     def machine_validate(self, fmap):
         assert self.name in fmap

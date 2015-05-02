@@ -3,27 +3,18 @@ from utils import _str_set, _str_dict, _dict_print, _set_print
 from functools import reduce
 import logging
 from .operand import Register, Cell, Global, get_operand
-class EntryBB:
-    def __init__(self, args, succ):
-        self.out_reg = {}
-        self.internal_dfn = set(args)
-        self.dombb = set()
-        self.availbb = set()
-        self.out = set()
-        self.In = set()
-        self.succs = [succ]
-        for n, v in enumerate(args):
-            if n > 3:
-                break
-            self.out_reg[v] = Register("a%d" % n)
-        #arguments are passed in reverse order
-        top = len(args)-4
-        for n, v in enumerate(args[3:]):
-            self.out_reg[v] = Cell((top-n)*4)
-    def inout_next(self, *_):
-        pass
-    def inout_finish(self):
-        pass
+from .dfa import dfa_run
+
+def _str_bb_list(a):
+    res = ""
+    for bb in a:
+        if isinstance(bb, BB):
+            res += bb.name+", "
+        else :
+            res += str(bb)+", "
+    if a:
+        res = res[:-2]
+    return res
 
 class BB:
     '''
@@ -32,10 +23,10 @@ class BB:
     '''
     def __str__(self):
         res = self.name+":\n"
-        res += "#availbb: "+str(self.availbb)+"\n"
+        res += "#availbb: "+_str_bb_list(self.avail)+"\n"
         res += "#a_dfn: "+_str_set(self.a_dfn)+"\n"
-        res += "#pred: "+str(self.preds)+"\n"
-        res += "#succ: "+str(self.succs)+"\n"
+        res += "#pred: "+_str_bb_list(self.preds)+"\n"
+        res += "#succ: "+_str_bb_list(self.succs)+"\n"
         res += "#In: "+_str_set(self.In)+"\n"
         for i in self.phis:
             res += "\t"+str(i)+"\n"
@@ -65,8 +56,6 @@ class BB:
         self.ins = []
         self.phis = []
         self.name = name
-        self.avail_done = False
-        self.inout_done = False
         self.br = None
         self.in_dfn = set() #in_dfn = definitions in this bb
         self.a_dfn = set() #available definitions
@@ -74,35 +63,16 @@ class BB:
         self.succs = [] #next[0] = branch taken, next[1] = otherwise
         self.preds = []
         self.validated = False
-        self.availbb = set()
+        self.avail = set()
         self.out = set()
         self.In = set()
         self.out_reg = {}
-        self.dombb = set()
+        self.sub = set()
+        self.entry = None
         if bb:
             self += bb.phis
             self += bb.ins
             self += [bb.br]
-
-    def avail_next(self, bbmap, queue):
-        if not self.preds:
-            availbb_next = set()
-        else :
-            pabb = [bbmap[pbb].availbb|{pbb} for pbb in self.preds]
-            availbb_next = reduce(lambda x, y: x&y, pabb)
-        if availbb_next != self.availbb:
-            for nbb in self.succs:
-                if nbb:
-                    queue |= {bbmap[nbb]}
-            self.availbb = set(availbb_next)
-
-    def avail_finish(self, bbmap):
-        self.avail_done = True
-        self.a_dfn = set()
-        for prevbb in self.availbb:
-            pbb = bbmap[prevbb]
-            self.a_dfn |= pbb.internal_dfn
-            pbb.dombb |= {self.name}
 
     @property
     def internal_used(self):
@@ -111,21 +81,17 @@ class BB:
         for i in self.ins+[self.br]:
             self.in_used |= i.get_used()
         return self.in_used
-
-    def inout_next(self, bbmap, queue):
-        self.In = (self.out|self.internal_used)-self.internal_dfn
-        for prevbb in self.preds:
-            sbb = bbmap[prevbb]
-            new_out = sbb.out|self.In
-            for i in self.phis:
-                srcu = i.srcs[prevbb].get_used()
-                new_out |= srcu
-            if new_out != sbb.out:
-                sbb.out = new_out
-                queue |= {prevbb}
-
-    def inout_finish(self, bbmap):
-        self.inout_done = True
+    @property
+    def internal_dfn(self):
+        if self.in_dfn:
+            return self.in_dfn
+        for i in self.phis+self.ins:
+            x = i.get_dfn()
+            assert not x & self.in_dfn, "Variable "+_str_set(x)+"defined again"
+            self.in_dfn |= x
+        if self.entry:
+            self.in_dfn |= set(self.entry)
+        return self.in_dfn
 
     def __iadd__(self, _ins):
         ins = copy.copy(_ins)
@@ -143,39 +109,17 @@ class BB:
                 else :
                     self.ins.append(i)
         return self
-    @property
-    def avail_dfn(self):
-        assert self.avail_done, "Call calc_avail before get avail_dfn"
-        return self.a_dfn
-    @property
-    def internal_dfn(self):
-        if self.in_dfn:
-            return self.in_dfn
-        for i in self.phis+self.ins:
-            self.in_dfn |= i.get_dfn()
-        return self.in_dfn
-    def validate(self, fname, bbmap, fmap):
-        #with the help of available dfn
-        #we can make sure all of the variables used in this bb
-        #is always defined on all the paths leading to this bb
+    def validate(self, rety, fmap):
         assert self.br
         self.validated = True
-        _dfn = set(self.a_dfn)
-        #skip phi instructions, only get their defines
-        #because phi instruction can grab a variable defined later in this bb
         for i in self.phis:
-            i.validate(self.preds, bbmap)
-            _dfn |= i.get_dfn()
-        #validate other instructions
+            i.validate(self.preds)
         for i in self.ins:
-            i.validate(_dfn, fmap)
-            _dfn |= i.get_dfn()
-        self.br.validate(_dfn, fmap[fname])
-    def machine_validate(self, bbmap, fmap):
+            i.validate(fmap)
+    def machine_validate(self, fmap):
         assert not self.phis
         for i in self.ins:
             i.machine_validate(fmap)
-        self.br.machine_validate(bbmap)
     def liveness(self):
         #we assume there're no unreachable code
         #we have a pruning pass to make sure of that
@@ -197,7 +141,51 @@ class BB:
             assert v in R or v in R.M, "%s not allocated" % v
             self.out_reg[v] = R.get_reg_or_mem(v)
 
+def _phi_get_used(succ, pred):
+    u = set()
+    for i in succ.phis:
+        assert pred.name in i.srcs, "%s %s" % (i, pred.name)
+        if i.srcs[pred.name].is_var:
+            u |= {i.srcs[pred.name]}
+    return u
+def inout_transfer(bb, In):
+    out = set()
+
+
+    for n in bb.succs:
+        out |= In[n]
+        logging.info("Phi %s->%s, %s", bb.name, n.name, _str_set(_phi_get_used(n, bb)))
+        out |= _phi_get_used(n, bb)
+
+    logging.info(str(bb.name)+"'s out:"+_str_set(out))
+    logging.info(str(bb.name)+"'s use:"+_str_set(bb.internal_used))
+    logging.info(str(bb.name)+"'s dfn:"+_str_set(bb.internal_dfn))
+    new_in = (out|bb.internal_used)-bb.internal_dfn
+    if new_in != In[bb]:
+        logging.info("Update %s's In add %s " % (bb.name, _str_set(new_in-In[bb])))
+        In[bb] = new_in
+        return True
+    return False
+
+def available_transfer(bb, avail):
+    if not bb.preds:
+        ret = bool(avail[bb])
+        avail[bb] = set()
+        return ret
+    new_avail = avail[bb.preds[0]]|{bb.preds[0]}
+    for i in range(1, len(bb.preds)):
+        new_avail &= avail[bb.preds[i]]|{bb.preds[i]}
+    if new_avail == avail[bb]:
+        return False
+    avail[bb] = new_avail
+    return True
+
 class Func:
+    def tgt_used(self, n):
+        for bb in self.bb:
+            if n == bb.br.tgt[0] or n == bb.br.tgt[1]:
+                return True
+        return False
     def glob_for_str(self, s):
         if s not in self.ir.str_map:
             self.ir.str_map[s] = Global("str_%d" % len(self.ir.str_map))
@@ -216,8 +204,7 @@ class Func:
         if self.param:
             res = res[:-1]
         res += ")\n"
-        if 0 in self.bbmap:
-            res += "#Used parameters: %s\n" % _str_set(self.bbmap[0].out)
+        res += "#Used parameters: %s\n" % _str_set(self.bb[0].In)
         for bb in self.bb:
             res += str(bb)
         res += "endfun\n"
@@ -228,7 +215,6 @@ class Func:
             self.bb = copy.copy(bb)
         else :
             self.bb = []
-        self.bbmap = {}
         self.namecnt = 0
         self.name = name
         self.param = [get_operand(p) for p in param]
@@ -239,8 +225,6 @@ class Func:
 
     def __iadd__(self, o):
         for i in o:
-            assert i.name not in self.bbmap, "Basic blocks with duplicated name "+i.name+str(self.bbmap)
-            self.bbmap[i.name] = i
             self.bb.append(i)
         return self
 
@@ -257,43 +241,40 @@ class Func:
         return r
 
     def calc_connections(self):
+        bbmap = {}
         for i in self.bb:
+            assert i.name not in bbmap, "Basic blocks with duplicated name "+i.name
+            bbmap[i.name] = i
+        for i in self.bb:
+            nsuccs = []
             for succ in i.succs:
                 if not succ:
                     continue
-                assert succ in self.bbmap, "Jumping to a non-existent block %s" % succ
-                self.bbmap[succ].preds.append(i.name)
+                s = bbmap[succ]
+                nsuccs.append(s)
+                s.preds.append(i)
+            i.succs = nsuccs
 
     def calc_avail(self):
-        #calculate blocks that are 'available' to this bb
-        #the definition of 'available' is the same as in the slides
-        #the 'available' variable would than be all variable defined in available blocks
-        init = set(self.bbmap.keys())
-        reachable = set()
+        '''calculate blocks that are 'available' to this bb
+        the definition of 'available' is the same as in the slides
+        the 'available' variable would than be all variable defined in available blocks'''
+        avail = {}
+        dfa_run(self, available_transfer, avail, set(self.bb), False)
         for bb in self.bb:
-            bb.availbb = init
-        queue = {self.bb[0]}
-        while queue :
-            h = queue.pop()
-            reachable |= {h}
-            h.avail_next(self.bbmap, queue)
-        for bb in self.bb:
-            if bb not in reachable:
-                bb.availbb = set()
-            bb.avail_finish(self.bbmap)
+            bb.availbb = avail[bb]
+            for p in bb.avail:
+#                self.a_dfn |= p.internal_dfn
+                p.sub |= {self}
 
     def calc_inout(self):
-        queue = set()
+        In = {}
+        dfa_run(self, inout_transfer, In, set())
+        logging.info(In)
         for bb in self.bb:
-            bb.In = set()
-            bb.out = set()
-            queue |= {bb.name}
-        while queue:
-            h = queue.pop()
-            self.bbmap[h].inout_next(self.bbmap, queue)
-            #print("%s: new In %s, new out %s" % (h, self.bbmap[h].In, self.bbmap[h].out))
-        for bb in self.bb:
-            bb.inout_finish(self.bbmap)
+            bb.In = set(In[bb])
+            for p in bb.preds:
+                p.out |= bb.In|_phi_get_used(bb, p)
 
     def gencode(self, ir):
         assert self.is_machine_ir
@@ -303,38 +284,47 @@ class Func:
         for n, bb in enumerate(self.bb):
             nextbb = None
             if n+1 < numbb:
-                nextbb = self.bb[n+1].name
+                nextbb = self.bb[n+1]
             res += bb.gencode(self, nextbb)
         return res
 
     def finish(self, fmap):
         self.finished = True
-        self.bb[0].preds = [0]
-        self.bbmap[0] = EntryBB(self.param, self.bb[0].name)
         logging.debug(self)
         self.calc_connections()
         self.calc_avail()
-        self.validate(fmap)
+
+        self.bb[0].entry = self.param
+
         self.calc_inout()
+        logging.info(self)
+        self.validate(fmap)
         for bb in self.bb:
             bb.liveness()
 
     def machine_finish(self, fmap):
         self.finished = True
+        self.calc_connections()
         self.machine_validate(fmap)
         self.is_machine_ir = True
 
     @property
     def last_bb(self):
+        assert self.bb
         return self.bb[-1]
 
     def validate(self, fmap):
         for i in self.bb:
-            i.validate(self.name, self.bbmap, fmap)
+            assert i.preds or not i.In, "Variables "+_str_set(i.In)+"not defined"
+            i.validate(self.rety, fmap)
 
     def machine_validate(self, fmap):
+        allname = set()
         for i in self.bb:
-            i.machine_validate(self.bbmap, fmap)
+            assert i.name not in allname, "Basic blocks with duplicated name "+i.name
+            allname |= {i.name}
+        for i in self.bb:
+            i.machine_validate(fmap)
 
 class BuiltinFn:
     def __init__(self, name, code, rety, nparam):

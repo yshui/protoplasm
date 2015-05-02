@@ -2,18 +2,20 @@
 import IR.instruction as IRI
 import IR.mod as mod
 import IR.operand as opr
-from utils import _str_set, _str_dict, get_father, link
+from utils import _str_set, _str_dict, DisjointSet
 import logging
 from . import set_log_phase, unset_log_phase
 callee_saved = set([opr.Register("s%d" % i) for i in range(0, 10)])
 def jump_block_removal(func, fmap):
-#    set_log_phase("jbr"+func.name)
+    set_log_phase("jbr"+func.name)
     logging.info(func)
     jmap = {}
     changed = False
     assert func.is_machine_ir, "JBR can only be performed on machine IR"
+    bbmap = {}
     for bb in func.bb:
-        jmap[bb.name] = bb.name
+        jmap[bb.name] = DisjointSet(bb.name)
+        bbmap[bb.name] = bb
     for bb in func.bb:
         if bb.ins or bb.br.tgt[1]:
             continue
@@ -21,25 +23,25 @@ def jump_block_removal(func, fmap):
             continue
         changed = True
         logging.info("Link %s -> %s", bb.name, bb.br.tgt[0])
-        link(bb.br.tgt[0], bb.name, jmap)
+        jmap[bb.br.tgt[0]].union(jmap[bb.name])
     if not changed:
         #unset_log_phase()
         return (False, func)
     nfn = mod.Func(func.name, func.param, func.rety)
-    b0 = get_father(func.bb[0].name, jmap)
+    b0 = jmap[func.bb[0].name].get_father().i
     logging.info("Entry BB is now %s", b0)
-    nbb = mod.BB(b0, func.bbmap[b0])
+    nbb = mod.BB(b0, bbmap[b0])
     def redir(br):
         for x in range(0, 2):
             oldtgt = br.tgt[x]
             if not oldtgt:
                 continue
-            br.tgt[x] = get_father(oldtgt, jmap)
+            br.tgt[x] = jmap[oldtgt].get_father().i
             logging.info("Redirect %s to %s", oldtgt, br.tgt[x])
     redir(nbb.br)
     nfn += [nbb]
     for bb in func.bb:
-        rdir = get_father(bb.name, jmap)
+        rdir = jmap[bb.name].get_father().i
         if rdir != bb.name:
             continue
         if bb.name == b0:
@@ -49,7 +51,7 @@ def jump_block_removal(func, fmap):
         nfn += [nbb]
     logging.info(nfn)
     nfn.machine_finish(fmap)
-    #unset_log_phase()
+    unset_log_phase()
     return (True, nfn)
 
 def branch_merge(func, fmap):
@@ -71,7 +73,7 @@ def branch_merge(func, fmap):
         logging.info(bb.br)
         nxbb = mod.BB(bb.name)
         nxbb += bb.ins
-        nxbb += [IRI.Br(0, None, bb.br.tgt[0], None)]
+        nxbb += [IRI.Br(0, None, bb.br.tgt[0].name, None)]
         nfn += [nxbb]
     nfn.machine_finish(fmap)
     #unset_log_phase()
@@ -123,24 +125,22 @@ def save_registers(func, fmap):
     reg_changed = {}
     self_reg_changed = {}
     for bb in func.bb:
-        self_reg_changed[bb.name] = set()
+        self_reg_changed[bb] = set()
         for i in bb.ins:
             if isinstance(i, IRI.Invoke):
-                self_reg_changed[bb.name] |= {opr.Register("ra")}
-            self_reg_changed[bb.name] |= i.get_dfn()&callee_saved
-        reg_changed[bb.name] = self_reg_changed[bb.name]
+                self_reg_changed[bb] |= {opr.Register("ra")}
+            self_reg_changed[bb] |= i.get_dfn()&callee_saved
+        reg_changed[bb] = self_reg_changed[bb]
 
-    queue = set([bb.name for bb in func.bb if reg_changed[bb.name]])
+    queue = set([bb for bb in func.bb if reg_changed[bb]])
     if not queue:
         unset_log_phase()
         return (False, func)
 
     while queue:
-        bbname = queue.pop()
-        for succ in func.bbmap[bbname].succs:
-            if succ is None:
-                continue
-            nchanged = reg_changed[bbname]|reg_changed[succ]
+        bb = queue.pop()
+        for succ in bb.succs:
+            nchanged = reg_changed[bb]|reg_changed[succ]
             if nchanged != reg_changed[succ]:
                 reg_changed[succ] = nchanged
                 queue |= {succ}
@@ -171,7 +171,7 @@ def save_registers(func, fmap):
         #restore register before return
         nbb = mod.BB(bb.name)
         nbb += bb.ins
-        for reg in reg_changed[bb.name]:
+        for reg in reg_changed[bb]:
             nbb += [IRI.Load(reg, opr.Cell(offsetof[reg]))]
         nbb += [IRI.Arithm('+', "$sp", "$sp", len(all_reg_changed)*4)]
         nbb += [bb.br]

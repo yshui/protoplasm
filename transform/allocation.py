@@ -10,30 +10,42 @@ from collections import deque
 import logging
 from utils import _str_dict, _str_set, _dict_print, _set_print
 import copy
-def allocate_bb(bb, bbmap):
+def allocate_bb(bb, allocated):
     #allocate for phi
     ret = {}
     M = Memory()
     R = Registers(M)
     prmap = {}
     logging.info(">>>>>>>>>>>>>>%s<<<<<<<<<<<<<<<<<", bb.name)
-    if len(bb.preds) == 1:
+    if bb.entry is not None:
+        for n, v in enumerate(bb.entry[:4]):
+            reg = IRO.Register("a%d" % n)
+            R.reserve(v, reg)
+            ret[v] = deque([reg])
+        top = len(bb.entry)
+        for n, v in enumerate(bb.entry[4:]):
+            m = IRO.Cell((top-n)*4)
+            R.reserve(v, m)
+            ret[v] = deque([m])
+    elif len(bb.preds) == 1:
         assert not bb.phis
         pred, = bb.preds
-        pred = bbmap[pred]
         for v in bb.In:
             assert v in pred.out_reg, str(bb)+str(pred)
-            ret[v] = deque([])
+            ret[v] = deque([pred.out_reg[v]])
             R.reserve(v, pred.out_reg[v])
         logging.info("On block entry"+_str_dict(R.vrmap))
     else :
         M2 = Memory()
         R2 = Registers()
         for i in bb.phis:
-            for phibb, v in i.srcs.items():
-                pbb = bbmap[phibb]
-                if v not in pbb.out_reg:
+            for pbb, v in i.srcs.items():
+                if pbb not in allocated:
                     continue
+                if not v.is_var:
+                    continue
+                pbb = allocated[pbb]
+                assert v in pbb.out_reg, "%s %s %s %s" % (v, pbb.name, bb.name, _str_dict(pbb.out_reg))
                 sreg = pbb.out_reg[v]
                 if not sreg.is_reg:
                     if sreg not in M2:
@@ -46,11 +58,13 @@ def allocate_bb(bb, bbmap):
         for i in bb.phis:
             logging.info(M)
             reg = None #reg in srcs not used
-            for phibb, v in i.srcs.items():
-                pbb = bbmap[phibb]
-                if v not in pbb.out_reg:
+            for pbb, v in i.srcs.items():
+                if pbb not in allocated:
                     #the pbb is not allocated yet
                     continue
+                if not v.is_var:
+                    continue
+                pbb = allocated[pbb]
                 srcreg = pbb.out_reg[v]
                 if srcreg.is_reg:
                     if srcreg not in R:
@@ -154,6 +168,7 @@ def allocate_bb(bb, bbmap):
             ret[s].append(sm)
     bb.assign_out_reg(R)
     logging.info("OUT REG:" + _str_dict(bb.out_reg))
+    allocated[bb.name] = bb
     return (ret, prmap)
 
 def promote_replay(v, R, allocation):
@@ -193,15 +208,13 @@ def allocate(func, fmap):
     todo = set()
     mentry = set()
     allocation = {}
+    allocated = {}
     prmaps = {}
     for bb in func.bb:
         if len(bb.preds) > 1:
             mentry |= {bb}
         todo |= {bb}
         unallocated_pred[bb] = len(bb.preds)
-
-    for bb in func.bbmap[0].succs:
-        unallocated_pred[func.bbmap[bb]] -= 1
 
     queue = set([bb for bb in todo if unallocated_pred[bb] == 0])
     assert queue
@@ -210,11 +223,8 @@ def allocate(func, fmap):
         todo -= {h}
         mentry -= {h}
         #allocate bb
-        allocation[h], prmaps[h] = allocate_bb(h, func.bbmap)
+        allocation[h], prmaps[h] = allocate_bb(h, allocated)
         for nbb in h.succs:
-            if not nbb:
-                continue
-            nbb = func.bbmap[nbb]
             logging.info("%s-=1", nbb.name)
             unallocated_pred[nbb] -= 1
             if unallocated_pred[nbb] <= 0 and nbb in todo:
@@ -247,16 +257,18 @@ def allocate(func, fmap):
         pred = None
         nbb = mod.BB(bb.name)
         bballoc = allocation[bb]
-        if len(bb.preds) == 1:
-            pred, = bb.preds
-            pred = func.bbmap[pred]
-            for v in bb.In:
-                R.reserve(v, pred.out_reg[v])
-        else :
-            for i in bb.phis:
-                v = i.dst
-                reg = bballoc[v].popleft()
-                R.reserve(v, reg)
+
+        In = bb.In
+        if bb.entry:
+            In = In|set(bb.entry)
+        for v in In:
+            reg = bballoc[v].popleft()
+            R.reserve(v, reg)
+
+        for i in bb.phis:
+            v = i.dst
+            reg = bballoc[v].popleft()
+            R.reserve(v, reg)
         for i in bb.ins+[bb.br]:
             logging.info("Allocating for %s", i)
             if isinstance(i, IR.Rename):
@@ -325,8 +337,7 @@ def allocate(func, fmap):
         for succ in bb.succs:
             if not succ:
                 continue
-            sbb = func.bbmap[succ]
-            nbb = gen_phi_block(bb, sbb, prmaps[sbb])
+            nbb = gen_phi_block(bb, succ, prmaps[succ])
             #fallthrough should be put right after
             nfn += [nbb]
         logging.info(bb.name)

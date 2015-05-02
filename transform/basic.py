@@ -51,9 +51,11 @@ def static_branch_removal(func, fmap):
     #remove all br with constant condition
     set_log_phase("static")
     nfn = mod.Func(func.name, func.param, func.rety)
+    bbmap = {}
     for bb in func.bb:
         nxbb = mod.BB(bb.name, bb)
         nfn += [nxbb]
+        bbmap[bb.name] = nxbb
     varmap = {}
     changed = False
     for bb in nfn.bb:
@@ -69,13 +71,13 @@ def static_branch_removal(func, fmap):
         bv = bb.br.src.val
         bb.br.src = opr.Nil()
         if (bv == 0 and op == 1) or (bv != 0 and op == 2):
-            to_delete = bb.br.tgt[1]
+            to_delete = bbmap[bb.br.tgt[1]]
         else :
-            to_delete = bb.br.tgt[0]
+            to_delete = bbmap[bb.br.tgt[0]]
             bb.br.tgt[0] = bb.br.tgt[1]
         bb.br.tgt[1] = None
-        logging.info("Changed to %s" % bb.br)
-        phi_branch_removal(nfn.bbmap[to_delete], bb.name, varmap)
+        logging.info("Changed to %s", bb.br)
+        phi_branch_removal(to_delete, bb.name, varmap)
 
     if not changed:
         unset_log_phase()
@@ -97,19 +99,17 @@ def prune_unreachable(func, fmap):
     while queue:
         b = queue.pop()
         for s in b.succs:
-            if s is None:
-                continue
-            ss = func.bbmap[s]
-            if ss in removed:
-                logging.info("BB %s is reachable", ss.name)
-                removed -= {ss}
-                queue |= {ss}
+            if s in removed:
+                logging.info("BB %s is reachable", s.name)
+                removed -= {s}
+                queue |= {s}
 
     if not removed:
         if not func.finished:
             #remove pre calculated preds and succs
             for bb in func.bb:
                 bb.preds = []
+                bb.succs = bb.br.tgt
             func.finish(fmap)
         unset_log_phase()
         return (False, func)
@@ -126,11 +126,9 @@ def prune_unreachable(func, fmap):
     varmap = {}
     for bb in removed:
         for s in bb.succs:
-            if s is None:
+            if s in removed:
                 continue
-            if func.bbmap[s] in removed:
-                continue
-            phi_branch_removal(nfn.bbmap[s], bb.name, varmap)
+            phi_branch_removal(s, bb.name, varmap)
 
     remap_all_uses(varmap, nfn)
 
@@ -162,10 +160,14 @@ def prune_unused(func, fmap):
             if ds:
                 d, = ds
                 dfn_ins[d] = i
+
+    param_set = set(func.param)
     while queue:
         d = queue.pop()
-        if d in func.bbmap[0].out:
+        if d not in dfn_ins:
             #is a parameter
+            logging.info("%s should be a parameter")
+            assert d in param_set
             continue
         assert d in dfn_ins, d
         i = dfn_ins[d]
@@ -220,11 +222,8 @@ def block_coalesce(func, fmap):
         nxbb += bb.phis
         nxbb += bb.ins
         now = bb
-        while not now.succs[1]:
-            succ, _ = now.succs
-            if not succ:
-                break
-            succ = func.bbmap[succ]
+        while len(now.succs) == 1:
+            succ, = now.succs
             if len(succ.preds) != 1 or succ == func.bb[0]:
                 #bb[0] has an implicit predecessor
                 break
@@ -267,16 +266,21 @@ def variable_rename(func, fmap):
     logging.info(func)
     nfn = mod.Func(func.name, func.param, func.rety)
     changed = False
+    varmap = {}
+    bbmap = {}
     for bb in func.bb:
         logging.info("======%s======", bb.name)
         nxbb = mod.BB(bb.name, bb)
-        if not bb.In and not bb.phis:
-            logging.info("%s has no phi, no in, continue", bb.name)
+        if not bb.In:
+            logging.info("%s has no in, continue", bb.name)
             nfn += [nxbb]
+            varmap[nxbb] = {}
+            bbmap[nxbb.name] = nxbb
             continue
         nbb = mod.BB(bb.name)
+        bbmap[bb.name] = nbb
         #add phi nodes
-        varmap = {}
+        vmap = {}
         if len(bb.preds) > 1:
             #create phi node to grab the replaced
             #variable from different preds
@@ -287,68 +291,61 @@ def variable_rename(func, fmap):
                 changed = True
                 ni = IRI.Phi(str(v)+"."+bb.name)
                 for p in bb.preds:
-                    pp = func.bbmap[p]
-                    if v in pp.In:
-                        ni.set_source(p, str(v)+"."+p)
+                    if v in p.In:
+                        ni.set_source(p.name, str(v)+"."+p.name)
                     else :
-                        ni.set_source(p, str(v))
+                        ni.set_source(p.name, str(v))
                 nphi.append(ni)
-                varmap[v] = opr.Var(v.val+"."+bb.name)
-            logging.info("Rewrite original phi")
-            for i in bb.phis:
-                logging.info("%s: %s", bb.name, i)
-                ni = copy.copy(i)
-                for srcbb, v in ni.srcs.items():
-                    if v.is_imm:
-                        continue
-                    sbb = func.bbmap[srcbb]
-                    assert v.is_var
-                    if v in sbb.In:
-                        changed = True
-                        logging.info("%s in %s's In, change name to %s", v, srcbb, str(v)+"."+srcbb)
-                        ni.set_source(srcbb, str(v)+"."+srcbb)
-                    else :
-                        logging.info("%s not in %s's In", v, srcbb)
-                nphi.append(ni)
+                vmap[v] = opr.Var(v.val+"."+bb.name)
             nbb += nphi
+            nbb += bb.phis
         else :
             #only one pred, but now the in variables might have changed
             logging.info("Single pred, rewrite var name")
             pred, = bb.preds
-            pred = func.bbmap[pred]
-            varmap = {}
             for v in bb.In:
                 assert v.is_var
                 if v in pred.In:
-                    varmap[v] = opr.Var(v.val+"."+pred.name)
-                    logging.info("%s -> %s", v, varmap[v])
+                    vmap[v] = opr.Var(v.val+"."+pred.name)
+                    logging.info("%s -> %s", v, vmap[v])
         if varmap:
             changed = True
         for i in bb.ins:
-            ni = copy.copy(i)
-            ni.allocate(varmap)
-            nbb += [ni]
+            i.allocate(vmap)
+            nbb += [i]
         passthrou = bb.In&bb.out
         if len(bb.preds) == 1 and passthrou:
             changed = True
             pred, = bb.preds
-            pred = func.bbmap[pred]
             for v in passthrou:
                 vname = str(v)
                 if v in pred.In:
                     vname += "."+pred.name
                 i = IRI.Rename(str(v)+"."+bb.name, vname)
                 nbb += [i]
-                varmap[v] = opr.Var(i.dst.val)
+                vmap[v] = opr.Var(i.dst.val)
         if bb.br:
-            nbr = copy.copy(bb.br)
-            nbr.allocate(varmap)
-            nbb += [nbr]
+            bb.br.allocate(vmap)
+            nbb += [bb.br]
         nfn += [nbb]
+        varmap[nbb] = vmap
+
+    for bb in nfn.bb:
+        print(_str_dict(varmap[bb]))
+        if not varmap[bb]:
+            continue
+        for s in bb.succs:
+            if not s:
+                continue
+            succ = bbmap[s]
+            for i in succ.phis:
+                if i.srcs[bb.name] in varmap[bb]:
+                    i.srcs[bb.name] = i.srcs[bb.name].allocate(varmap[bb])
+
     nfn.finish(fmap)
     logging.info(nfn)
     for bb in nfn.bb:
         assert not bb.In or len(bb.preds) == 1, "%s %s %s" % (_str_set(bb.In), _str_set(bb.preds), bb)
-        assert not (bb.In&bb.out), "%s: %s" %(bb.name, bb.In&bb.out)
+        assert not (bb.In&bb.out), "%s: %s" %(bb.name, _str_set(bb.In&bb.out))
     unset_log_phase()
     return (changed, nfn)

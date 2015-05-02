@@ -442,8 +442,8 @@ class Block:
             w.emit(self.symtable, fn)
             if not w.cont:
                 break
-        if self.is_top:
-            bound_name = fn.mangle()+"_Lbound"
+        bound_name = fn.mangle()+"_Lbound"
+        if self.is_top and fn.tgt_used(bound_name):
             bb = fn.append_bb(bound_name)
             strg = fn.glob_for_str("Out-of-bound error, abort\\n")
             strv = st.allocator.next_name()
