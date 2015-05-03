@@ -112,10 +112,14 @@ class BB:
     def validate(self, rety, fmap):
         assert self.br
         self.validated = True
+        dfn = set(self.In)
         for i in self.phis:
             i.validate(self.preds)
+            dfn |= {i.dst}
         for i in self.ins:
+            assert i.get_used() <= dfn
             i.validate(fmap)
+            dfn |= {i.dst}
     def machine_validate(self, fmap):
         assert not self.phis
         for i in self.ins:

@@ -105,6 +105,7 @@ class Arithm(NIns):
 
     def __init__(self, op, dst, opr1, opr2, c=None):
         assert op in self.opc
+        self.ops = {v:k for k, v in self.opc.items()}
         self.op = self.opc[op]
         self.dst = get_operand(dst, True)
         self.opr1 = get_operand(opr1)
@@ -150,20 +151,21 @@ class Cmp(NIns):
     iopc = {0: 0, 1: 3, 2: 4, 3: 1, 4: 2, 5: 5}
     def gencode(self, _):
         assert self.dst.is_reg
-        if self.src1.is_imm and self.src2.is_imm:
+        if self.opr1.is_imm and self.opr2.is_imm:
             assert False
-        if self.src1.is_imm:
-            assert self.src2.is_reg
-            return "\t%s %s, %s, %s\n" % (self.opname[self.iopc[self.op]], str(self.dst), str(self.src2), str(self.src1))
+        if self.opr1.is_imm:
+            assert self.opr2.is_reg
+            return "\t%s %s, %s, %s\n" % (self.opname[self.iopc[self.op]], str(self.dst), str(self.opr2), str(self.opr1))
         else :
-            assert self.src1.is_reg, self.src1
-            assert self.src2.is_reg or self.src2.is_imm
-            return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.src1), str(self.src2))
+            assert self.opr1.is_reg, self.opr1
+            assert self.opr2.is_reg or self.opr2.is_imm
+            return "\t%s %s, %s, %s\n" % (self.opname[self.op], str(self.dst), str(self.opr1), str(self.opr2))
     def __init__(self, op, dst, src1, src2, c=None):
         assert op in self.opc
+        self.ops = {v:k for k, v in self.opc.items()}
         self.op = self.opc[op]
-        self.src1 = get_operand(src1)
-        self.src2 = get_operand(src2)
+        self.opr1 = get_operand(src1)
+        self.opr2 = get_operand(src2)
         self.dst = get_operand(dst, True)
         self.is_phi = False
         self.is_br = False
@@ -174,16 +176,16 @@ class Cmp(NIns):
         rrr = _str_dict(regmap)
         if dst:
             self.dst = self.dst.allocate(regmap)
-        self.src1 = self.src1.allocate(regmap)
-        self.src2 = self.src2.allocate(regmap)
+        self.opr1 = self.opr1.allocate(regmap)
+        self.opr2 = self.opr2.allocate(regmap)
     def get_used(self):
-        return self.src1.get_used()|self.src2.get_used()
+        return self.opr1.get_used()|self.opr2.get_used()
     def machine_validate(self, _):
-        self.src1.machine_validate()
-        self.src2.machine_validate()
+        self.opr1.machine_validate()
+        self.opr2.machine_validate()
         self.dst.machine_validate()
     def __str__(self):
-        res = "%s = cmp %s %s, %s" % (self.dst, self.opname[self.op], self.src1, self.src2)
+        res = "%s = cmp %s %s, %s" % (self.dst, self.opname[self.op], self.opr1, self.opr2)
         return res+self.comment
 
 class Br(BaseIns):
@@ -397,6 +399,7 @@ class Invoke(NIns):
     def allocate(self, varmap, dst=True):
         if dst:
             self.dst = self.dst.allocate(varmap)
+        logging.info(_str_dict(varmap))
         self.args = [arg.allocate(varmap) for arg in self.args]
     def machine_validate(self, fmap):
         assert self.name in fmap

@@ -151,6 +151,7 @@ def prune_unused(func, fmap):
     queue = set()
     for bb in func.bb:
         for i in bb.phis+bb.ins+[bb.br]:
+            print(i)
             ds = i.get_dfn()
             #Store, Invoke, Br and Ret are leaves
             if type(i) in {IRI.Invoke, IRI.Store, IRI.Ret, IRI.Br}:
