@@ -95,13 +95,22 @@ class Arithm(NIns):
             if self.opr2.val == 0 and self.opr1 == self.dst:
                 logging.info("%s is NOP" % self)
                 return ""
+        elif self.opr1.is_imm:
+            if self.op in {1, 3, 6, 7}:
+                #swap opr1 and opr2 for +, *, &, |
+                self.opr1, self.opr2 = self.opr2, self.opr1
+
+        res = ""
         opr1 = self.opr1
         if opr1.is_imm:
-            assert opr1.val == 0
-            opr1 = Register("0")
+            if opr1.val == 0:
+                opr1 = Register("0")
+            else :
+                res += "\tli $v0, %d\n" % opr1.val
+                opr1 = Register("v0")
         assert opr1.is_reg
         assert self.opr2.is_reg or self.opr2.is_imm
-        return "\t%s %s, %s, %s\n" % (self.opname[self.op], self.dst, opr1, self.opr2)
+        return res+"\t%s %s, %s, %s\n" % (self.opname[self.op], self.dst, opr1, self.opr2)
 
     def __init__(self, op, dst, opr1, opr2, c=None):
         assert op in self.opc
@@ -113,13 +122,6 @@ class Arithm(NIns):
         self.comment = ""
         if c is not None :
             self.comment = "\t#"+c
-        if self.opr1.is_imm:
-            if self.op in {1, 3, 6, 7}:
-                #swap opr1 and opr2 for +, *, &, |
-                self.opr1, self.opr2 = self.opr2, self.opr1
-            else :
-                #otherwise fail
-                assert False
 
     def allocate(self, regmap, dst=True):
         if dst:

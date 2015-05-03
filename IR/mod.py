@@ -113,11 +113,13 @@ class BB:
         assert self.br
         self.validated = True
         dfn = set(self.In)
+        if self.entry:
+            dfn |= set(self.entry)
         for i in self.phis:
             i.validate(self.preds)
             dfn |= {i.dst}
         for i in self.ins:
-            assert i.get_used() <= dfn
+            assert i.get_used() <= dfn, "%s is undefined" % _str_set(i.get_used()-dfn)
             i.validate(fmap)
             dfn |= {i.dst}
     def machine_validate(self, fmap):

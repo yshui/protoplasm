@@ -4,24 +4,10 @@ import logging
 from . import symbol as sym
 class Expr:
     cont = True
-    @property
-    def is_constant(self):
-        return False
-    def get_result_const(self, *_):
+    def emit(self, *_):
         assert False
-    def get_result_noconst(self, *_):
-        assert False
-    def get_result(self, st, ir, noconst=False):
-        assert isinstance(noconst, bool)
-        if self.is_constant:
-            res = self.get_result_const(st, ir)
-            if noconst:
-                n = st.allocator.next_name()
-                bb = ir.last_bb
-                bb += [IRI.Load(n, res, c=str(self))]
-                return n
-            return res
-        return self.get_result_noconst(st, ir)
+    def get_result(self, st, fn):
+        return self.emit(st, fn)
     def get_modified(self, _=False):
         return set()
 
@@ -42,7 +28,7 @@ class Call(Expr):
             args.append(arg.get_result(st, fn))
         bb = fn.last_bb
         bb += [IRI.Invoke(self.name, args, res)]
-    def get_result_noconst(self, st, fn):
+    def get_result(self, st, fn):
         res = st.allocator.next_name()
         self._get_result(st, fn, res)
         return res
@@ -85,11 +71,8 @@ class New(Expr):
         self.linenum = linenum
     def __str__(self):
         return "New(%s, [%s], []*%d)" % (self.t, self.dim, self.depth)
-    @property
-    def is_constant(self):
-        return False
-    def get_result_noconst(self, st, ir):
-        res = self.dim.get_result(st, ir, True)
+    def get_result(self, st, ir):
+        res = self.dim.get_result(st, ir)
         ndst = st.allocator.next_name()
         bb = ir.last_bb
         #calc (size+1) and (size+1)*4
@@ -127,23 +110,20 @@ class Inc(Expr):
         insn = ['Inc', 'Dec']
         pos = ['Pre', 'Post']
         return "%s%s(%s)" % (pos[self.pos], insn[self.op], self.lval)
-    @property
-    def is_constant(self):
-        return False
     def emit(self, st, ir):
         opn = ['+', '-']
-        if not self.res:
-            opr = self.lval.get_result(st, ir)
-            self.res = opr
-            cdst = st.allocator.next_name()
-            bb = ir.last_bb
-            bb += [IRI.Arithm(opn[self.op], cdst, opr, 1, c=str(self))]
-            if self.pos == 0: #pre
-                self.res = cdst
-            self.lval.assign(st, ir, cdst)
-    def get_result_noconst(self, st, ir):
-        self.emit(st, ir)
+        assert not self.res
+        opr = self.lval.get_result(st, ir)
+        self.res = opr
+        cdst = st.allocator.next_name()
+        bb = ir.last_bb
+        bb += [IRI.Arithm(opn[self.op], cdst, opr, 1, c=str(self))]
+        if self.pos == 0: #pre
+            self.res = cdst
+        self.lval.assign(st, ir, cdst)
         return self.res
+    def get_result(self, st, ir):
+        return self.emit(st, ir)
     def wellformed(self, st, dfn, _=None):
         if not self.lval.wellformed(st, dfn):
             return False
@@ -169,20 +149,14 @@ class Asgn(Expr):
         self.rhs = rhs
         self.linenum = linenum
         self.res = None
-    @property
-    def is_constant(self):
-        return self.rhs.is_constant
-    def get_result_const(self, st, ir):
-        self.emit(st, ir)
-        return self.rhs.get_result_const(st, ir)
-    def get_result_noconst(self, st, ir):
-        self.emit(st, ir)
-        return self.res
+    def get_result(self, st, ir):
+        return self.emit(st, ir)
     def emit(self, st, ir):
-        if not self.res:
-            v = self.rhs.get_result(st, ir, True)
-            self.res = v
-            self.lhs.assign(st, ir, v)
+        assert not self.res
+        v = self.rhs.get_result(st, ir)
+        self.res = v
+        self.lhs.assign(st, ir, v)
+        return v
     def wellformed(self, st, defined, _=None):
         if not self.lhs.wellformed(st, defined, True):
             return False
@@ -203,29 +177,17 @@ class Asgn(Expr):
         return dfn
 
 class UOP(Expr):
-    def get_result_noconst(self, st, ir):
+    def get_result(self, st, ir):
         copr = self.opr.get_result(st, ir)
         bb = ir.last_bb
         cdst = st.allocator.next_name()
         if self.op == '!':
             bb += [IRI.Cmp('==', cdst, copr, 0, c=str(self))]
         elif self.op == '-':
-            bb += [IRI.Arithm('-', cdst, copr, 0, c=str(self))]
+            bb += [IRI.Arithm('-', cdst, 0, copr, c=str(self))]
         else :
             assert False
         return cdst
-    @property
-    def is_constant(self):
-        return self.opr.is_constant
-    def get_result_const(self, st, ir):
-        assert self.is_constant
-        oo = self.opr.get_result_const(st, ir)
-        if self.op == '!' :
-            return not oo
-        elif self.op == '-' :
-            return -oo
-        else :
-            assert False
     def __str__(self):
         return "UOP({0},{1})".format(self.op, self.opr)
     def __init__(self, op, opr, linenum=0):
@@ -272,13 +234,13 @@ class BinOP(Expr):
         "<=":[intint_bool],
         ">=":[intint_bool],
     }
-    def get_result_noconst(self, st, ir):
+    def get_result(self, st, ir):
         arithm = {'+', '-', '*', '//', '%', '&', '|'}
         dst = st.allocator.next_name()
         if self.op not in {'&&', '||'}:
             if self.op in {'//', '%', '-'}:
                 #for these operators, we don't want the left to be constant
-                lres = self.lopr.get_result(st, ir, True)
+                lres = self.lopr.get_result(st, ir)
             else :
                 lres = self.lopr.get_result(st, ir)
             rres = self.ropr.get_result(st, ir)
@@ -334,27 +296,6 @@ class BinOP(Expr):
             return dst
         assert False
 
-    @property
-    def is_constant(self):
-        return self.lopr.is_constant and self.ropr.is_constant
-    def get_result_const(self, st, ir):
-        assert self.is_constant
-        ll = self.lopr.get_result_const(st, ir)
-        rr = self.ropr.get_result_const(st, ir)
-        if self.op not in {'&&', '||'} :
-            return int(eval("%d %s %d" % (ll, self.op, rr)))
-        elif self.op == '&&' :
-            if not ll:
-                return 0
-            else :
-                return rr
-        elif self.op == '||' :
-            if ll :
-                return ll
-            else :
-                return rr
-        else :
-            assert False
     def __str__(self):
         return "BinOP({0},{1},{2})".format(self.lopr, self.op, self.ropr)
     def __init__(self, opr1, op, opr2, linenum=0):
@@ -393,7 +334,7 @@ class Var(Expr):
         bb += [IRI.GetAddrOf(addr, IRO.Global(self.name))]
         return addr
 
-    def get_result_noconst(self, st, fn):
+    def get_result(self, st, fn):
         if self.is_global:
             res = st.allocator.next_name()
             addr = self.get_global_addr(st, fn)
@@ -401,9 +342,6 @@ class Var(Expr):
             bb += [IRI.Load(res, IRO.Cell(0, addr))]
             return res
         return st.curr_ver(self.name)
-    @property
-    def is_constant(self):
-        return False
     def __init__(self, name, linenum=0):
         self.name = name
         self.linenum = linenum
@@ -453,7 +391,7 @@ class ArrIndx(Expr): #array indexing expr
     def __str__(self):
         return "%s[%s]" % (self.lhs, self.index)
     def get_offset(self, st, fn):
-        base = self.lhs.get_result(st, fn, True)
+        base = self.lhs.get_result(st, fn)
         idx = self.index.get_result(st, fn)
         bb = fn.last_bb
 
@@ -487,15 +425,12 @@ class ArrIndx(Expr): #array indexing expr
         offset = st.allocator.next_name()
         bb += [IRI.Arithm('+', offset, idx, base, c="Address of "+str(self))]
         return offset
-    def get_result_noconst(self, st, fn):
+    def get_result(self, st, fn):
         offset = self.get_offset(st, fn)
         result = st.allocator.next_name()
         bb = fn.last_bb
         bb += [IRI.Load(result, IRO.Cell(0, base=offset))]
         return result
-    @property
-    def is_constant(self):
-        return False
     def wellformed(self, st, dfn, _=False):
         if not self.lhs.wellformed(st, dfn, False):
             return False
@@ -522,8 +457,11 @@ class Num(Expr):
     @property
     def is_constant(self):
         return True
-    def get_result_const(self, *_):
-        return self.number
+    def get_result(self, st, fn):
+        res = st.allocator.next_name()
+        bb = fn.last_bb
+        bb += [IRI.Load(res, self.number)]
+        return res
     def __str__(self):
         return "Num({0})".format(self.number)
     def __init__(self, num, linenum=0):
@@ -539,16 +477,13 @@ class Num(Expr):
         return True
 
 class Inpt(Expr):
-    @property
-    def is_constant(self):
-        return False
     def __str__(self):
         return "Input()"
     def __init__(self, linenum=0):
         self.linenum = linenum
         self.ty = sym.Type('int')
         return
-    def get_result_noconst(self, st, fn):
+    def get_result(self, st, fn):
         dst = st.allocator.next_name()
         bb = fn.last_bb
         bb += [IRI.Invoke("input_int", [], dst, c=str(self))]

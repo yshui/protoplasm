@@ -107,7 +107,9 @@ def const_transfer(bb, const):
     value = {}
     for p in bb.preds:
         for v in const[p]:
-            assert v not in value
+            if v in value:
+                assert value[v] == const[p][v]
+                continue
             value[v] = const[p][v]
     for i in bb.ins:
         eval_const(i, value)
@@ -129,7 +131,7 @@ def const_propagation(fn, fmap):
             val[v] = opr.Imm(const[bb][v])
         allv = set(val)
         logging.info("Value in %s, %s", bb.name, _str_dict(val))
-        for i in nbb.ins:
+        for i in nbb.ins+[nbb.br]:
             u = i.get_used()
             if u&allv:
                 changed = True
