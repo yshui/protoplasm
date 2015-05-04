@@ -16,8 +16,9 @@ class Allocator:
         return "%%%s.%d" % (prefix, self.ver[prefix])
 
 class DupErr(Exception):
-    def __init__(self, name):
+    def __init__(self, name, linenum=0):
         self.name = name
+        self.linenum = linenum
         Exception.__init__(self)
 
 class SymTable:
@@ -37,11 +38,10 @@ class SymTable:
             self.globs = globs
         if dlist:
             for d in dlist:
-                try:
-                    self.d[d.name] = None
-                    self.t[d.name] = d
-                except:
-                    assert False, dlist
+                if d.name in self.d:
+                    raise DupErr(d.name, d.linenum)
+                self.d[d.name] = None
+                self.t[d.name] = d
 
     def __contains__(self, other):
         if other in self.d:

@@ -49,6 +49,10 @@ class BaseOpr:
 class Global(BaseOpr):
     def __init__(self, name):
         self.name = name
+    def __eq__(self, o):
+        return self.name == o.name
+    def __hash__(self):
+        return str(self).__hash__()
     def __str__(self):
         return "@"+self.name
     def get_name(self):
@@ -67,6 +71,7 @@ class Cell(BaseOpr):
     def __eq__(self, other):
         if not isinstance(other, Cell):
             return False
+        assert self.base.is_var or self.base == Register("sp"), "Comparing %s %s " % (self, other)
         return self.off == other.off and self.base == other.base
     def __hash__(self):
         return str.__hash__(str(self))
@@ -178,22 +183,6 @@ class Nil(BaseOpr):
         return self
     def get_type(self):
         return Type("void")
-
-class ROStr:
-    def __init__(self, s):
-        self.s = s
-    def validate(self, *_):
-        return True
-    def machine_validate(self):
-        return True
-    def allocate(self, _):
-        return self
-    def get_used(self):
-        return set()
-    def get_rodata(self):
-        return {self.s}
-    def __str__(self):
-        return "\"%s\"" % self.s
 
 def get_operand(val, dst=False):
     if type(val) in {Nil, Var, Register, Cell, Imm, Global}:

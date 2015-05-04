@@ -74,6 +74,7 @@ def allocate_bb(bb, allocated):
                 else :
                     if srcreg not in M:
                         #this memory is not used by any phi yet
+                        logging.info("Using memory for %s, because src %s:%s is in memory", i.dst, pbb.name, v)
                         M.reserve(i.dst, srcreg)
                         reg = srcreg
                         break
@@ -83,6 +84,8 @@ def allocate_bb(bb, allocated):
                 reg = R2.get(i.dst)
                 if reg:
                     R.reserve(i.dst, reg)
+                else :
+                    logging.info("No reg for %s :/", i.dst)
             if not reg:
                 reg = R.get(i.dst)
             if not reg:
@@ -213,12 +216,18 @@ def allocate(func, fmap):
     for bb in func.bb:
         if len(bb.preds) > 1:
             mentry |= {bb}
+        elif len(bb.preds) == 1 and bb.entry is not None:
+            mentry |= {bb}
         todo |= {bb}
         unallocated_pred[bb] = len(bb.preds)
 
     queue = set([bb for bb in todo if unallocated_pred[bb] == 0])
-    assert queue
     while todo:
+        if not queue and todo:
+            #queue empty, find the bb with the least unallocated pred
+            candidate = min(mentry, key=unallocated_pred.get)
+            logging.info("%s!_!->%s", candidate.name, unallocated_pred[candidate])
+            queue = {candidate}
         h = queue.pop()
         todo -= {h}
         mentry -= {h}
@@ -229,11 +238,6 @@ def allocate(func, fmap):
             unallocated_pred[nbb] -= 1
             if unallocated_pred[nbb] <= 0 and nbb in todo:
                 queue |= {nbb}
-        if not queue and todo:
-            #queue empty, find the bb with the least unallocated pred
-            candidate = min(mentry, key=unallocated_pred.get)
-            logging.info("%s!_!->%s", candidate.name, unallocated_pred[candidate])
-            queue = {candidate}
 
     for bb in allocation:
         logging.info("<=====%s=====>", bb.name)
@@ -317,10 +321,10 @@ def allocate(func, fmap):
             if ds:
                 d, = ds
                 nbb += promote_replay(d, R, allocation[bb])
-            tmpvrmap = copy.copy(R.vrmap)
-            for v in vrmap2:
-                tmpvrmap[v] = vrmap2[v]
-            ni.allocate(tmpvrmap)
+            if d is not None:
+                assert d in R.vrmap, d
+                vrmap2[d] = R.vrmap[d]
+            ni.allocate(vrmap2)
             if ni.is_br:
                 #if the branch instruction has a target
                 #change the target to point to the phi block

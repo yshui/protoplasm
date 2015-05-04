@@ -48,6 +48,7 @@ def arg_passing(nbb, args, R):
     for n, arg in enumerate(args[:4]):
         treg = Register("a%d" % n)
         logging.info("WWWT"+_str_dict(R.vrmap))
+        print("WWWT"+_str_dict(R.vrmap))
         if arg in R:
             tgt[arg] = treg
             src[arg] = R.vrmap[arg]
@@ -55,7 +56,7 @@ def arg_passing(nbb, args, R):
         if arg.is_imm:
             nbb += [Load(treg, arg.val)]
         else :
-            assert arg in R.M.vmmap, _str_dict(R.M.vmmap)
+            assert arg in R.M.vmmap, "%s %s" % (_str_dict(R.M.vmmap), str(arg))
             nbb += [Load(treg, R.M.vmmap[arg])]
 
     v0_inuse = False
@@ -63,9 +64,10 @@ def arg_passing(nbb, args, R):
         progress = False
         done = set()
         for arg in tgt:
-            if tgt[arg] not in crmap:
+            if tgt[arg] not in crmap or tgt[arg] == src[arg]:
                 logging.info("Move %s(%s) to %s, %s", arg, src[arg], tgt[arg], _str_dict(crmap))
-                nbb += [Arithm('+', tgt[arg], src[arg], 0)]
+                if tgt[arg] != src[arg]:
+                    nbb += [Arithm('+', tgt[arg], src[arg], 0)]
                 done |= {arg}
                 if src[arg] == Register("v0"):
                     v0_inuse = False

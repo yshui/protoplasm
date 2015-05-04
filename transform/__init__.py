@@ -9,7 +9,7 @@ def set_log_phase(n):
     #if isinstance(myhdlr, logging.NullHandler):
     #    return
     myhdlr.close()
-    myhdlr = logging.FileHandler(filename=n+".log", mode="w")
+    myhdlr = logging.FileHandler(filename=n+".log")
     logger.addHandler(myhdlr)
 
 def unset_log_phase():

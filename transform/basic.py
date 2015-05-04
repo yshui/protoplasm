@@ -5,7 +5,7 @@ import IR.mod as mod
 import IR.machine as machine
 from . import set_log_phase, unset_log_phase
 from collections import deque
-from utils import _set_print, _dict_print, _str_dict, _str_set
+from utils import _set_print, _dict_print, _str_dict, _str_set, DisjointSet
 import copy
 import logging
 def _phi_get_used(i):
@@ -25,6 +25,7 @@ def phi_branch_removal(bb, br, varmap):
             _, varmap[i.dst] = i.srcs.popitem()
 
     if clear_phi:
+        logging.info("Clear phis in node %s", bb.name)
         bb.phis = []
 
 def remap_all_uses(varmap, func):
@@ -49,7 +50,7 @@ def remap_all_uses(varmap, func):
 
 def static_branch_removal(func, fmap):
     #remove all br with constant condition
-    set_log_phase("static")
+    set_log_phase("static"+func.name)
     nfn = mod.Func(func.name, func.param, func.rety)
     bbmap = {}
     for bb in func.bb:
@@ -78,7 +79,6 @@ def static_branch_removal(func, fmap):
         bb.br.tgt[1] = None
         logging.info("Changed to %s", bb.br)
         phi_branch_removal(to_delete, bb.name, varmap)
-
     if not changed:
         unset_log_phase()
         return (False, func)
@@ -118,16 +118,19 @@ def prune_unreachable(func, fmap):
     for bb in removed:
         logging.info("* %s", bb.name)
     nfn = mod.Func(func.name, func.param, func.rety)
+    nbbmap = {}
     for bb in func.bb:
         if bb not in removed:
             nxbb = mod.BB(bb.name, bb)
             nfn += [nxbb]
+            nbbmap[bb.name] = nxbb
 
     varmap = {}
     for bb in removed:
         for s in bb.succs:
             if s in removed:
                 continue
+            s = nbbmap[s.name]
             phi_branch_removal(s, bb.name, varmap)
 
     remap_all_uses(varmap, nfn)
@@ -151,11 +154,11 @@ def prune_unused(func, fmap):
     queue = set()
     for bb in func.bb:
         for i in bb.phis+bb.ins+[bb.br]:
-            print(i)
             ds = i.get_dfn()
             #Store, Invoke, Br and Ret are leaves
             if type(i) in {IRI.Invoke, IRI.Store, IRI.Ret, IRI.Br}:
                 u = i.get_used()
+                logging.info("%s is used because of %s", _str_set(u), i)
                 queue |= u
                 used |= u
             if ds:
@@ -176,6 +179,7 @@ def prune_unused(func, fmap):
             u = _phi_get_used(i)
         else :
             u = i.get_used()
+        logging.info("%s is used because of %s", _str_set(u), i)
         queue |= (u-used)
         used |= u
 
@@ -332,7 +336,6 @@ def variable_rename(func, fmap):
         varmap[nbb] = vmap
 
     for bb in nfn.bb:
-        print(_str_dict(varmap[bb]))
         if not varmap[bb]:
             continue
         for s in bb.succs:
@@ -350,3 +353,83 @@ def variable_rename(func, fmap):
         assert not (bb.In&bb.out), "%s: %s" %(bb.name, _str_set(bb.In&bb.out))
     unset_log_phase()
     return (changed, nfn)
+
+def branch_merge(func, fmap):
+    #if both target of a branch instruction is the same
+    #replace it with unconditional jump
+    set_log_phase("bm"+func.name)
+    logging.info(func)
+    nfn = mod.Func(func.name, func.param, func.rety)
+    changed = False
+    for bb in func.bb:
+        if bb.br.tgt[1] != bb.br.tgt[0]:
+            nfn += [mod.BB(bb.name, bb)]
+            continue
+        if not bb.br.tgt[0]:
+            nfn += [mod.BB(bb.name, bb)]
+            continue
+        changed = True
+        logging.info(bb.br)
+        nxbb = mod.BB(bb.name)
+        nxbb += bb.ins
+        nxbb += [IRI.Br(0, None, bb.br.tgt[0], None)]
+        nfn += [nxbb]
+    if func.is_machine_ir:
+        nfn.machine_finish(fmap)
+    else :
+        nfn.finish(fmap)
+    unset_log_phase()
+    return (changed, nfn)
+
+def jump_block_removal(func, fmap):
+    set_log_phase("jbr"+func.name)
+    logging.info(func)
+    jmap = {}
+    changed = False
+    bbmap = {}
+    for bb in func.bb:
+        jmap[bb.name] = DisjointSet(bb.name)
+        bbmap[bb.name] = bb
+    for bb in func.bb:
+        if bb.ins or bb.br.tgt[1]:
+            continue
+        if not bb.br.tgt[0]:
+            continue
+        tgtbb = bbmap[bb.br.tgt[0]]
+        if tgtbb.phis:
+            continue
+        changed = True
+        logging.info("Link %s -> %s", bb.name, bb.br.tgt[0])
+        jmap[bb.br.tgt[0]].union(jmap[bb.name])
+    if not changed:
+        unset_log_phase()
+        return (False, func)
+    nfn = mod.Func(func.name, func.param, func.rety)
+    b0 = jmap[func.bb[0].name].get_father().i
+    logging.info("Entry BB is now %s", b0)
+    nbb = mod.BB(b0, bbmap[b0])
+    def redir(br):
+        for x in range(0, 2):
+            oldtgt = br.tgt[x]
+            if not oldtgt:
+                continue
+            br.tgt[x] = jmap[oldtgt].get_father().i
+            logging.info("Redirect %s to %s", oldtgt, br.tgt[x])
+    redir(nbb.br)
+    nfn += [nbb]
+    for bb in func.bb:
+        rdir = jmap[bb.name].get_father().i
+        if rdir != bb.name:
+            continue
+        if bb.name == b0:
+            continue
+        nbb = mod.BB(bb.name, bb)
+        redir(nbb.br)
+        nfn += [nbb]
+    logging.info(nfn)
+    if func.is_machine_ir:
+        nfn.machine_finish(fmap)
+    else :
+        nfn.finish(fmap)
+    unset_log_phase()
+    return (True, nfn)

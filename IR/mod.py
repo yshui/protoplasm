@@ -5,6 +5,9 @@ import logging
 from .operand import Register, Cell, Global, get_operand
 from .dfa import dfa_run
 
+def print(*_):
+    assert False
+
 def _str_bb_list(a):
     res = ""
     for bb in a:
@@ -15,7 +18,6 @@ def _str_bb_list(a):
     if a:
         res = res[:-2]
     return res
-
 class BB:
     '''
     Last and only the last instruction can be Br
@@ -97,7 +99,7 @@ class BB:
         ins = copy.copy(_ins)
         while ins:
             assert not self.br, "Appending instruction after end of BB %s" % self
-            i = ins.pop(0)
+            i = copy.copy(ins.pop(0))
             if i.is_phi:
                 if self.ins:
                     raise Exception("Phi instructions in the middle of a BB")
@@ -115,6 +117,7 @@ class BB:
         dfn = set(self.In)
         if self.entry:
             dfn |= set(self.entry)
+        assert not self.phis or len(self.preds) > 1, "Only 1 predecessor, but has phis"
         for i in self.phis:
             i.validate(self.preds)
             dfn |= {i.dst}
@@ -160,31 +163,36 @@ def inout_transfer(bb, In):
 
     for n in bb.succs:
         out |= In[n]
-        logging.info("Phi %s->%s, %s", bb.name, n.name, _str_set(_phi_get_used(n, bb)))
+        #logging.info("Phi %s->%s, %s", bb.name, n.name, _str_set(_phi_get_used(n, bb)))
         out |= _phi_get_used(n, bb)
 
-    logging.info(str(bb.name)+"'s out:"+_str_set(out))
-    logging.info(str(bb.name)+"'s use:"+_str_set(bb.internal_used))
-    logging.info(str(bb.name)+"'s dfn:"+_str_set(bb.internal_dfn))
+    #logging.info(str(bb.name)+"'s out:"+_str_set(out))
+    #logging.info(str(bb.name)+"'s use:"+_str_set(bb.internal_used))
+    #logging.info(str(bb.name)+"'s dfn:"+_str_set(bb.internal_dfn))
     new_in = (out|bb.internal_used)-bb.internal_dfn
     if new_in != In[bb]:
-        logging.info("Update %s's In add %s " % (bb.name, _str_set(new_in-In[bb])))
+        #logging.info("Update %s's In add %s " % (bb.name, _str_set(new_in-In[bb])))
         In[bb] = new_in
         return True
     return False
 
 def available_transfer(bb, avail):
-    if not bb.preds:
+    if not bb.preds or bb.entry is not None:
+        assert bb.entry is not None, "BB %s unreachable, %s" % (bb.name, bb.entry)
         ret = bool(avail[bb])
         avail[bb] = set()
         return ret
+    logging.info("BB %s, prev %s", bb.name, _str_bb_list(avail[bb]))
     new_avail = avail[bb.preds[0]]|{bb.preds[0]}
-    for i in range(1, len(bb.preds)):
-        new_avail &= avail[bb.preds[i]]|{bb.preds[i]}
-    if new_avail == avail[bb]:
-        return False
-    avail[bb] = new_avail
-    return True
+    for pbb in bb.preds[1:]:
+        new_avail &= avail[pbb]|{pbb}
+    logging.info("now: %s", _str_bb_list(new_avail))
+    if new_avail != avail[bb]:
+        logging.info("update")
+        avail[bb] = new_avail
+        return True
+    logging.info("not update")
+    return False
 
 class Func:
     def tgt_used(self, n):
@@ -268,10 +276,11 @@ class Func:
         avail = {}
         dfa_run(self, available_transfer, avail, set(self.bb), False)
         for bb in self.bb:
-            bb.availbb = avail[bb]
+            logging.info("BBxx  %s, %s", bb.name, _str_bb_list(avail[bb]))
+            bb.avail = avail[bb]
             for p in bb.avail:
 #                self.a_dfn |= p.internal_dfn
-                p.sub |= {self}
+                p.sub |= {bb}
 
     def calc_inout(self):
         In = {}
@@ -298,9 +307,9 @@ class Func:
         self.finished = True
         logging.debug(self)
         self.calc_connections()
-        self.calc_avail()
-
         self.bb[0].entry = self.param
+        logging.info(self)
+        self.calc_avail()
 
         self.calc_inout()
         logging.info(self)
@@ -320,9 +329,19 @@ class Func:
         return self.bb[-1]
 
     def validate(self, fmap):
+        dfn = set()
+        allname = set()
+        for bb in self.bb:
+            for i in bb.ins+bb.phis:
+                d = i.get_dfn()
+                assert not d&dfn, "%s is defined again" % _str_set(d&dfn)
+                dfn |= d
+            allname |= {bb.name}
+
         for i in self.bb:
             assert i.preds or not i.In, "Variables "+_str_set(i.In)+"not defined"
             i.validate(self.rety, fmap)
+            i.br.validate(allname, self.rety)
 
     def machine_validate(self, fmap):
         allname = set()
@@ -331,6 +350,7 @@ class Func:
             allname |= {i.name}
         for i in self.bb:
             i.machine_validate(fmap)
+            i.br.machine_validate(allname)
 
 class BuiltinFn:
     def __init__(self, name, code, rety, nparam):

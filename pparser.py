@@ -1,8 +1,8 @@
 import ply.yacc as yacc
 from lexer import tokens
-import ast.ast as ast
-import ast.symbol as sym
-import ast.expr as expr
+import AST.ast as ast
+import AST.symbol as sym
+import AST.expr as expr
 import sys
 import logging
 precedence = (

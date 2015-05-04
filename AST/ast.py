@@ -46,7 +46,7 @@ class Return:
         if self.expr is None:
             if rety == VoidTy():
                 return True
-            logging.error("Trying to return a value in a function declared as 'void', line %d", self.linenum)
+            logging.error("Function has type '%s', but returning with an empty statement, line %d", rety, self.linenum)
             return False
         if not self.expr.wellformed(st, defined):
             return False
@@ -353,7 +353,9 @@ class Fn:
         res = "%s %s (" % (self.rety, self.name)
         for p in self.params:
             res += "%s, " %p
-        res = res[:-2]+") {"
+        if self.params:
+            res = res[:-2]
+        res += ") {"
         res += str(self.body)+"}"
         return res
     def wellformed(self, globs):
@@ -388,6 +390,11 @@ class Fn:
         ir += [func]
 
 class Program:
+    def __str__(self):
+        res = ""
+        for fn in self.decl:
+            res += str(fn)+"\n"
+        return res
     def __init__(self, decl_list):
         self.decl = decl_list
 
@@ -449,20 +456,24 @@ class Block:
             strv = st.allocator.next_name()
             bb += [IRI.GetAddrOf(strv, strg)]
             bb += [IRI.Invoke("print_str", [strv], None), IRI.Invoke("exit", [], None)]
-            bb += [IRI.Br(0, None, bound_name, None)]
+            if not self.rety == VoidTy():
+                bb += [IRI.Ret(1)]
+            else :
+                bb += [IRI.Ret()]
 
     def wellformed(self, st, defined, rety):
         if not self.symtable:
             try :
                 self.symtable = SymTable(dlist=self.dlist, prototype=st)
             except DupErr as e:
-                logging.error("Variable %s defined again\n" % e.name)
+                logging.error("Variable %s defined in same scope again, line %d\n",e.name,e.linenum)
                 return False
         else :
             assert self.symtable.prototype == st
         dfn = copy.copy(defined)
         #clear everything that is re-declared in this block
         dfn -= set(self.symtable.d)
+        self.rety = rety
         for w in self.slist:
             if not w.wellformed(self.symtable, dfn, rety):
                 return False
@@ -492,6 +503,7 @@ class Block:
         self.is_top = False
         self.linenum = linenum
         self.cont = None
+        self.rety = None
     def __iadd__(self, obj):
         self.slist += [obj]
         return self

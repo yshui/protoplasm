@@ -1,4 +1,4 @@
-from .operand import Register, Nil, ROStr, Type, get_operand
+from .operand import Register, Nil, Type, get_operand
 from utils import _str_dict, _str_set
 import logging
 
@@ -223,9 +223,7 @@ class Br(BaseIns):
     def get_dfn(self):
         return set()
     def get_used(self):
-        if self.src:
-            return self.src.get_used()
-        return set()
+        return self.src.get_used()
     def gencode(self, nextbb):
         if self.op == 0:
             if self.tgt[0] != nextbb:
@@ -288,11 +286,16 @@ def load_or_move(src, dst):
         return "\tlw %s, %s\n" % (str(dst), src)
 
 def move_or_store(src, dst):
-    assert src.is_reg
+    assert src.is_reg, src
+    res = ""
+#    if src.is_imm:
+#        res += "\tli $v0, %s\n" % str(src)
+#        src = Register("v0")
     if dst.is_reg:
-        return "\tadd %s, %s, 0\n" % (dst, src)
+        res += "\tadd %s, %s, 0\n" % (dst, src)
     else :
-        return "\tsw %s, %s\n" % (src, dst)
+        res += "\tsw %s, %s\n" % (src, dst)
+    return res
 
 class Load(NIns):
     def __init__(self, dst, m, c=None):
@@ -386,10 +389,9 @@ class Invoke(NIns):
     def get_used(self):
         res = set()
         for arg in self.args:
+            logging.info("%s %s", arg, type(arg))
             res |= arg.get_used()
         return res
-    def get_dfn(self):
-        return self.dst.get_dfn()
     def __str__(self):
         res = "%s = invoke %s [" % (self.dst, self.name)
         for arg in self.args:
@@ -399,10 +401,12 @@ class Invoke(NIns):
         res += "]"+self.comment
         return res
     def allocate(self, varmap, dst=True):
+        logging.info("Invoke before: %s", self)
         if dst:
             self.dst = self.dst.allocate(varmap)
-        logging.info(_str_dict(varmap))
+        logging.info("Invoke varmap: "+_str_dict(varmap))
         self.args = [arg.allocate(varmap) for arg in self.args]
+        logging.info("Invoke after: %s", self)
     def machine_validate(self, fmap):
         assert self.name in fmap
         self.name_mangled = fmap[self.name].mangle()

@@ -2,82 +2,11 @@
 import IR.instruction as IRI
 import IR.mod as mod
 import IR.operand as opr
-from utils import _str_set, _str_dict, DisjointSet
+from utils import _str_set, _str_dict
 import logging
 from . import set_log_phase, unset_log_phase
 callee_saved = set([opr.Register("s%d" % i) for i in range(0, 10)])
-def jump_block_removal(func, fmap):
-    set_log_phase("jbr"+func.name)
-    logging.info(func)
-    jmap = {}
-    changed = False
-    assert func.is_machine_ir, "JBR can only be performed on machine IR"
-    bbmap = {}
-    for bb in func.bb:
-        jmap[bb.name] = DisjointSet(bb.name)
-        bbmap[bb.name] = bb
-    for bb in func.bb:
-        if bb.ins or bb.br.tgt[1]:
-            continue
-        if not bb.br.tgt[0]:
-            continue
-        changed = True
-        logging.info("Link %s -> %s", bb.name, bb.br.tgt[0])
-        jmap[bb.br.tgt[0]].union(jmap[bb.name])
-    if not changed:
-        #unset_log_phase()
-        return (False, func)
-    nfn = mod.Func(func.name, func.param, func.rety)
-    b0 = jmap[func.bb[0].name].get_father().i
-    logging.info("Entry BB is now %s", b0)
-    nbb = mod.BB(b0, bbmap[b0])
-    def redir(br):
-        for x in range(0, 2):
-            oldtgt = br.tgt[x]
-            if not oldtgt:
-                continue
-            br.tgt[x] = jmap[oldtgt].get_father().i
-            logging.info("Redirect %s to %s", oldtgt, br.tgt[x])
-    redir(nbb.br)
-    nfn += [nbb]
-    for bb in func.bb:
-        rdir = jmap[bb.name].get_father().i
-        if rdir != bb.name:
-            continue
-        if bb.name == b0:
-            continue
-        nbb = mod.BB(bb.name, bb)
-        redir(nbb.br)
-        nfn += [nbb]
-    logging.info(nfn)
-    nfn.machine_finish(fmap)
-    unset_log_phase()
-    return (True, nfn)
 
-def branch_merge(func, fmap):
-    #if both target of a branch instruction is the same
-    #replace it with unconditional jump
-    #set_log_phase("bm"+func.name)
-    logging.info(func)
-    nfn = mod.Func(func.name, func.param, func.rety)
-    assert func.is_machine_ir
-    changed = False
-    for bb in func.bb:
-        if bb.br.tgt[1] != bb.br.tgt[0]:
-            nfn += [mod.BB(bb.name, bb)]
-            continue
-        if not bb.br.tgt[0]:
-            nfn += [mod.BB(bb.name, bb)]
-            continue
-        changed = True
-        logging.info(bb.br)
-        nxbb = mod.BB(bb.name)
-        nxbb += bb.ins
-        nxbb += [IRI.Br(0, None, bb.br.tgt[0].name, None)]
-        nfn += [nxbb]
-    nfn.machine_finish(fmap)
-    #unset_log_phase()
-    return (changed, nfn)
 
 def get_stack_usage(ins):
     reg_sp = opr.Register("sp")
